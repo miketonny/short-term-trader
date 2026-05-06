@@ -1,0 +1,5 @@
+data.json
+fail_count.json
+*.pyc
+__pycache__/
+.hermes/

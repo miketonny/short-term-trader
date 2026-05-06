@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IBKR Strategy Dashboard</title>
+<style>
+  :root {
+    --bg: #0a0a0f; --card: #13131a; --border: #1e1e2a;
+    --green: #22c55e; --red: #ef4444; --yellow: #eab308;
+    --text: #e2e8f0; --muted: #94a3b8; --accent: #5e6ad2;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Inter', -apple-system, sans-serif;
+    padding: 24px; min-height: 100vh; max-width: 1400px; margin: 0 auto;
+  }
+  h1 { font-size: 22px; font-weight: 700; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  h2 { font-size: 15px; font-weight: 600; margin: 20px 0 12px; color: var(--text); }
+  .subtitle { color: var(--muted); font-size: 13px; margin: 6px 0 12px; }
+
+  /* Status */
+  .status-bar {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; margin-bottom: 14px; font-size: 13px;
+  }
+  .market-badge {
+    padding: 3px 10px; border-radius: 6px; font-weight: 600; font-size: 12px;
+  }
+  .market-open    { background: rgba(34,197,94,0.15); color: var(--green); }
+  .market-closed  { background: rgba(239,68,68,0.15); color: var(--red); }
+  .market-premarket { background: rgba(234,179,8,0.15); color: var(--yellow); }
+  .market-weekend { background: rgba(148,163,184,0.1); color: var(--muted); }
+  .market-blocked { background: rgba(239,68,68,0.15); color: var(--red); }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .dot-live { background: var(--green); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .refresh { color: var(--muted); font-size: 12px; margin-left: auto; }
+
+  /* Account */
+  .account-bar {
+    display: flex; gap: 20px; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; margin-bottom: 16px; font-size: 13px;
+  }
+  .account-item { display: flex; flex-direction: column; gap: 2px; }
+  .account-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .account-value { font-weight: 600; font-size: 16px; }
+
+  /* Cards */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; position: relative;
+  }
+  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+  .symbol {
+    font-size: 28px; font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), #818cf8);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .price { font-size: 24px; font-weight: 600; }
+
+  .position-badge {
+    padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+    display: inline-block; margin-bottom: 8px;
+  }
+  .pos-yes { background: rgba(34,197,94,0.15); color: var(--green); border: 1px solid rgba(34,197,94,0.3); }
+  .pos-info { font-size: 12px; color: var(--muted); margin-bottom: 10px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .pos-info .pnl-pos { color: var(--green); font-weight: 600; }
+  .pos-info .pnl-neg { color: var(--red); font-weight: 600; }
+
+  /* Signals */
+  .signals { display: flex; flex-direction: column; gap: 6px; }
+  .signal {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 7px 10px; border-radius: 7px; font-size: 13px;
+    background: rgba(255,255,255,0.03); cursor: help;
+    transition: background 0.2s;
+  }
+  .signal:hover { background: rgba(255,255,255,0.06); }
+  .signal.pass { background: rgba(34,197,94,0.06); }
+  .signal .name { color: var(--text); }
+  .signal .icon { font-size: 15px; }
+  .signal .tip {
+    font-size: 11px; color: var(--muted); margin-left: 8px; opacity: 0;
+    transition: opacity 0.2s; flex: 1; text-align: right; overflow: hidden;
+    white-space: nowrap; text-overflow: ellipsis;
+  }
+  .signal:hover .tip { opacity: 1; }
+
+  /* Score */
+  .score-bar { margin-top: 10px; height: 5px; border-radius: 3px; background: rgba(255,255,255,0.05); overflow: hidden; }
+  .score-fill { height: 100%; border-radius: 3px; transition: width 0.5s, background 0.5s; }
+  .indicators { display: flex; justify-content: space-between; margin-top: 6px; font-size: 12px; color: var(--muted); }
+
+  .sell-triggers { margin-top: 10px; }
+  .sell-tag {
+    display: inline-block; padding: 3px 10px; border-radius: 6px;
+    font-size: 12px; font-weight: 600; margin: 2px;
+    background: rgba(239,68,68,0.15); color: var(--red);
+  }
+
+  /* News */
+  .news-list { display: flex; flex-direction: column; gap: 6px; }
+  .news-item {
+    padding: 8px 12px; border-radius: 8px; font-size: 13px;
+    background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.03);
+    display: flex; gap: 10px; align-items: baseline;
+  }
+  .news-item:hover { background: rgba(255,255,255,0.04); }
+  .news-source {
+    font-size: 11px; color: var(--accent); font-weight: 600;
+    white-space: nowrap; min-width: 50px;
+  }
+  .news-title { color: var(--text); flex: 1; }
+  .news-time { font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+  /* Glossary */
+  .glossary {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 10px; margin-top: 8px;
+  }
+  .glossary-item {
+    padding: 10px 14px; border-radius: 8px; font-size: 13px;
+    background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.04);
+    line-height: 1.5;
+  }
+  .glossary-item strong { color: var(--accent); }
+  .glossary-item .desc { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .help-toggle {
+    font-size: 12px; color: var(--accent); cursor: pointer;
+    padding: 4px 10px; border-radius: 6px; border: 1px solid rgba(94,106,210,0.3);
+    background: transparent; margin-left: 12px;
+  }
+  .help-toggle:hover { background: rgba(94,106,210,0.1); }
+  .section-header { display: flex; align-items: center; }
+</style>
+</head>
+<body>
+
+<h1>
+  📊 Strategy Dashboard
+  <span id="marketBadge" class="market-badge"></span>
+  <span style="font-size:13px;color:var(--muted);font-weight:400" id="marketTime"></span>
+</h1>
+<div class="subtitle" id="statusLine"></div>
+
+<div class="status-bar">
+  <span id="liveDot"></span>
+  <span style="color:var(--muted);font-size:12px" id="posCount"></span>
+  <span class="refresh" id="refreshTimer">刷新 3s</span>
+</div>
+
+<div class="account-bar" id="accountBar"></div>
+
+<div class="grid" id="grid"></div>
+
+<div class="section-header">
+  <h2>📰 市场新闻</h2>
+</div>
+<div class="news-list" id="newsList">
+  <div class="news-item" style="color:var(--muted)">加载中...</div>
+</div>
+
+<div class="section-header">
+  <h2>📖 指标说明</h2>
+  <button class="help-toggle" onclick="toggleGlossary()" id="glossaryBtn">收起</button>
+</div>
+<div class="glossary" id="glossary">
+  <div class="glossary-item">
+    <strong>RSI (相对强弱指数)</strong>
+    <div class="desc">0-100，衡量涨跌力度。&lt;30=超卖(可能反弹)，&gt;70=超买(可能回调)。好比跑步太快会减速。</div>
+  </div><div class="glossary-item">
+    <strong>MA / SMA (移动均线)</strong>
+    <div class="desc">过去N根K线的平均价，判断趋势方向。价格在均线上方=上升趋势，下方=下降趋势。</div>
+  </div><div class="glossary-item">
+    <strong>布林带 (Bollinger Bands)</strong>
+    <div class="desc">三条线：中轨(MA20)、上轨(中轨+2σ)、下轨(中轨-2σ)。价格触及下轨=接近支撑位，触及上轨=接近阻力位。</div>
+  </div><div class="glossary-item">
+    <strong>ADX (趋势强度)</strong>
+    <div class="desc">0-100，衡量趋势是否有方向。&lt;20=横盘震荡(不交易)，&gt;25=有明确趋势(适合交易)。</div>
+  </div><div class="glossary-item">
+    <strong>MACD (异同移动平均)</strong>
+    <div class="desc">快线-慢线=MACD柱。柱由负转正=动能向上(买入信号)，柱由正转负=动能向下(卖出信号)。</div>
+  </div><div class="glossary-item">
+    <strong>成交量确认</strong>
+    <div class="desc">放量突破才是真实信号，缩量可能是假突破。好比投票：人越多越可信。</div>
+  </div><div class="glossary-item">
+    <strong>买入条件：6/6</strong>
+    <div class="desc">六个条件全部满足才下单。每个ETF独立判断，可同时持有多品种。NLV的25%分配。</div>
+  </div><div class="glossary-item">
+    <strong>卖出条件：1触即发</strong>
+    <div class="desc">RSI超买、触布林上轨、MACD死叉，任一触发立即卖出。保护利润比追求利润更重要。</div>
+  </div>
+</div>
+
+<script>
+const COLORS = { SPY: '#CF9A0C', QQQ: '#5e6ad2', IWM: '#22c55e' };
+const TIPS = {
+  "RSI超卖": "跌过头了，可能反弹",
+  "触及下轨": "价格到了支撑位",
+  "趋势向上": "方向朝上才安全",
+  "趋势明确": "不是横盘，有方向",
+  "MACD转正": "动能从弱变强",
+  "量能确认": "成交量充足，不是假信号",
+  // Trend mode tips
+  "RSI>50": "多头动能，非超买区",
+  "MACD金叉": "快线上穿慢线，动能转强",
+  "RSI>75": "顺势超买，止盈",
+  "跌破MA20": "趋势可能反转"
+};
+
+function toggleGlossary() {
+  const g = document.getElementById('glossary');
+  const btn = document.getElementById('glossaryBtn');
+  if (g.style.display === 'none') { g.style.display = ''; btn.textContent = '收起'; }
+  else { g.style.display = 'none'; btn.textContent = '展开'; }
+}
+
+function load() {
+  fetch('data.json?' + Date.now())
+    .then(r => r.json())
+    .then(data => render(data))
+    .catch(e => console.log('等待数据...'));
+}
+
+function fmt(n) { return n != null ? n.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2}) : '--'; }
+
+function render(data) {
+  const mk = data.market_status || 'weekend';
+  const badge = document.getElementById('marketBadge');
+  badge.textContent = data.market_text || '未知';
+  badge.className = 'market-badge market-' + mk;
+  document.getElementById('marketTime').textContent = data.market_et || '';
+  document.getElementById('statusLine').textContent =
+    `最后更新: ${data.time} NZT · ${data.date}` + (data.symbols_time ? ` · 盘中快照: ${data.symbols_time}` : '');
+
+  document.getElementById('liveDot').innerHTML =
+    '<span class="status-dot dot-live"></span> 运行中';
+
+  // Positions count
+  const positions = data.positions || {};
+  const held = Object.values(positions).filter(p => p != null);
+  document.getElementById('posCount').textContent = held.length > 0
+    ? `持仓: ${held.map(p => `${p.qty?.toFixed(3) || '?'}股`).join(', ')}`
+    : `无持仓`;
+
+  // Account bar
+  const acct = data.account || {};
+  document.getElementById('accountBar').innerHTML = acct.nlv ? `
+    <div class="account-item">
+      <span class="account-label">Net Liq (USD)</span>
+      <span class="account-value">$${fmt(acct.nlv)}</span>
+    </div>
+    <div class="account-item">
+      <span class="account-label">Buying Power (USD)</span>
+      <span class="account-value">$${fmt(acct.buying_power)}</span>
+    </div>
+  ` : '<span style="color:var(--muted)">账户信息获取中...</span>';
+
+  // Cards
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  for (const [sym, d] of Object.entries(data.symbols || {})) {
+    const score = d.score || 0;
+    const pct = score / 6 * 100;
+    const color = COLORS[sym] || '#5e6ad2';
+    const pos = positions[sym];
+
+    // Position display
+    let posHtml = '';
+    if (pos) {
+      posHtml = `<div class="position-badge pos-yes">● 持仓中</div>`;
+      posHtml += `<div class="pos-info">`;
+      posHtml += `<span>${pos.qty?.toFixed(3) || '?'} 股</span>`;
+      posHtml += `<span>成本 $${pos.avg_cost?.toFixed(2) || '--'}</span>`;
+      if (pos.entry_time) {
+        const entry = new Date(pos.entry_time);
+        posHtml += `<span title="${entry.toLocaleString()}">⏱ ${entry.toLocaleTimeString()}</span>`;
+      }
+      // Stop-loss line
+      if (pos.avg_cost) {
+        const sl = pos.avg_cost * 0.98;
+        posHtml += `<span style="color:var(--red)">止损 $${sl.toFixed(2)}</span>`;
+      }
+      if (d.price && pos.avg_cost) {
+        const pnl = (d.price - pos.avg_cost) * (pos.qty || 0);
+        const pnlPct = ((d.price - pos.avg_cost) / pos.avg_cost * 100);
+        const cls = pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+        posHtml += `<span class="${cls}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</span>`;
+      }
+      posHtml += `</div>`;
+    }
+
+    // Sell triggers
+    let sellHtml = '';
+    if (d.sell_triggers?.length) {
+      sellHtml = '<div class="sell-triggers">' +
+        d.sell_triggers.map(t => `<span class="sell-tag">⚠ ${t}</span>`).join('') + '</div>';
+    }
+
+    grid.innerHTML += `
+      <div class="card">
+        ${posHtml}
+        <div class="card-header">
+          <span class="symbol">
+            ${sym}
+            ${d.mode ? `<span style="font-size:11px;color:${d.mode==='trend'?'var(--green)':'var(--yellow)'};margin-left:6px;font-weight:400">${d.mode==='trend'?'📈顺势':'🔻超卖'}</span>` : ''}
+          </span>
+          <span class="price" style="color:${color}">$${d.price?.toFixed(2) || '--'}</span>
+        </div>
+        <div class="signals">
+          ${Object.entries(d.checks || {}).map(([name, ok]) => `
+            <div class="signal ${ok ? 'pass' : ''}" title="${TIPS[name] || ''}">
+              <span class="name">${name}</span>
+              <span class="tip">${TIPS[name] || ''}</span>
+              <span class="icon">${ok ? '✓' : '✗'}</span>
+            </div>
+          `).join('')}
+        </div>
+        <div class="score-bar">
+          <div class="score-fill" style="width:${d.mode==='trend' ? score/4*100 : pct}%;background:${(d.mode==='trend'?score/4*100:pct)>=100?'#22c55e':(d.mode==='trend'?score/4*100:pct)>=50?'#eab308':'#ef4444'}"></div>
+        </div>
+        <div class="indicators">
+          <span>RSI ${d.rsi} · ADX ${d.adx} · MA${d.sma}</span>
+          <span style="font-weight:600;color:${(d.mode==='trend'?score/4*100:pct)>=100?'var(--green)':'var(--muted)'}">${score}${d.mode==='trend'?'/4':'/6'}</span>
+        </div>
+        ${sellHtml}
+        ${pos && !d.sell_triggers?.length
+          ? '<div style="margin-top:10px;font-size:12px;color:var(--muted)">持有中，等待卖出信号</div>' : ''}
+      </div>`;
+  }
+
+  // News
+  const newsDiv = document.getElementById('newsList');
+  if (data.news?.length) {
+    newsDiv.innerHTML = data.news.map(n => `
+      <a class="news-item" href="${n.url}" target="_blank" style="text-decoration:none">
+        <span class="news-source">${n.source || 'Reuters'}</span>
+        <span class="news-title">${n.title}</span>
+        <span class="news-time">${n.time || ''}</span>
+      </a>
+    `).join('');
+  } else {
+    newsDiv.innerHTML = '<div class="news-item" style="color:var(--muted)">暂无新闻</div>';
+  }
+
+  // Timer
+  let s = 3;
+  const timer = document.getElementById('refreshTimer');
+  setInterval(() => { s--; timer.textContent = `刷新 ${s}s`; if(s<=0) s=3; }, 1000);
+}
+
+load();
+setInterval(load, 3000);
+</script>
+</body>
+</html>
