@@ -28,8 +28,55 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_response(400)
                 self.end_headers()
                 self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+        elif self.path == "/run_backtest":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "running", "message": "Backtest started — check /backtest_result"}).encode())
+            # Run backtest in background
+            import subprocess, threading
+            def run():
+                result_path = DASHBOARD_DIR / "backtest_result.json"
+                try:
+                    subprocess.run(["/home/maizi/.hermes/hermes-agent/venv/bin/python3", str(DASHBOARD_DIR / "backtest.py")],
+                                   capture_output=True, text=True, timeout=120, cwd=str(DASHBOARD_DIR))
+                except:
+                    pass
+            threading.Thread(target=run, daemon=True).start()
         else:
             super().do_POST()
+
+    def do_GET(self):
+        if self.path == "/backtest_result":
+            result_path = DASHBOARD_DIR / "backtest_result.json"
+            prev_path = DASHBOARD_DIR / "strategy_config_prev.json"
+            resp = {"status": "idle"}
+            if result_path.exists():
+                try:
+                    resp = json.loads(result_path.read_text())
+                    resp["status"] = "done"
+                except:
+                    resp = {"status": "error", "message": "Failed to parse results"}
+            else:
+                # Check if still running
+                import subprocess
+                r = subprocess.run(["pgrep", "-f", "backtest.py"], capture_output=True)
+                if r.returncode == 0:
+                    resp["status"] = "running"
+            # Attach previous config if exists
+            if prev_path.exists():
+                try:
+                    resp["prev_config"] = json.loads(prev_path.read_text())
+                except:
+                    pass
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode())
+            return
+        super().do_GET()
 
     def log_message(self, format, *args):
         if any(skip in (format % args) for skip in ["data.json", "strategy_config"]):

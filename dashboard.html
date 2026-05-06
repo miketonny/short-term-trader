@@ -195,6 +195,19 @@
 </div>
 
 
+
+<div class="section-header">
+  <h2>📊 回测 <span style="font-size:11px;color:var(--muted);font-weight:400">(30天历史模拟)</span></h2>
+  <button class="bt-btn" onclick="runBacktest()" id="btBtn">▶ 运行回测</button>
+  <span style="font-size:11px;color:var(--muted);margin-left:8px" id="btStatus"></span>
+</div>
+<div class="bt-panel" id="btPanel">
+  <div class="bt-status" id="btMsg"></div>
+  <div class="bt-metrics" id="btMetrics"></div>
+  <div style="font-size:12px;color:var(--muted)" id="btDetail"></div>
+</div>
+
+
 <div class="grid" id="grid"></div>
 
 <div class="section-header">
@@ -472,6 +485,94 @@ function render(data) {
   let s = 3;
   const timer = document.getElementById('refreshTimer');
   setInterval(() => { s--; timer.textContent = `刷新 ${s}s`; if(s<=0) s=3; }, 1000);
+}
+
+
+let btPolling = null;
+
+async function runBacktest() {
+  const btn = document.getElementById('btBtn');
+  btn.disabled = true; btn.textContent = '⏳ 回测中...';
+  document.getElementById('btStatus').textContent = '';
+  document.getElementById('btPanel').classList.add('open');
+  document.getElementById('btMsg').textContent = '拉取30天K线 + 模拟交易...';
+  document.getElementById('btMetrics').innerHTML = '';
+  document.getElementById('btDetail').textContent = '';
+
+  try {
+    await fetch('/run_backtest', { method: 'POST' });
+    pollBacktest();
+  } catch(e) {
+    document.getElementById('btMsg').textContent = '❌ 启动失败';
+    btn.disabled = false; btn.textContent = '▶ 运行回测';
+  }
+}
+
+function pollBacktest() {
+  const btn = document.getElementById('btBtn');
+  const msg = document.getElementById('btMsg');
+
+  btPolling = setInterval(async () => {
+    try {
+      const r = await fetch('/backtest_result?' + Date.now());
+      const d = await r.json();
+
+      if (d.status === 'running') {
+        msg.textContent = '⏳ 模拟交易中...';
+      } else if (d.status === 'done') {
+        clearInterval(btPolling);
+        renderBacktest(d);
+        btn.disabled = false; btn.textContent = '▶ 运行回测';
+        document.getElementById('btStatus').textContent = '✅ 完成';
+      } else if (d.status === 'error') {
+        clearInterval(btPolling);
+        msg.textContent = '❌ ' + (d.message || '回测失败');
+        btn.disabled = false; btn.textContent = '▶ 运行回测';
+      }
+    } catch(e) {
+      // still loading
+    }
+  }, 2000);
+}
+
+function renderBacktest(d) {
+  const t = d.trades || {};
+  const p = d.pnl || {};
+
+  const metrics = [
+    { label: '开仓次数', val: t.buy_count || 0, key: 'buy_count' },
+    { label: '胜率', val: (t.win_rate || 0) + '%', key: 'win_rate' },
+    { label: '总盈亏', val: '$' + (p.total || 0).toFixed(2), key: 'total' },
+    { label: '最大回撤', val: (d.max_drawdown_pct || 0) + '%', key: 'max_drawdown_pct' },
+  ];
+
+  // Compare with previous config if available
+  const prev = d.prev_config;
+  let prevResult = null;
+  if (prev) {
+    // Build diff display
+    const cfg = d.config || {};
+    const diffs = [];
+    for (const [k, l] of [['rsi_oversold','RSI超卖'],['rsi_overbought','RSI超买'],['stop_loss_pct','止损'],['position_alloc','仓位']]) {
+      if (cfg[k] !== undefined && prev[k] !== undefined && cfg[k] !== prev[k]) {
+        const mult = k.includes('pct') || k.includes('alloc') ? 100 : 1;
+        diffs.push(`${l}: ${(prev[k]*mult).toFixed(0)} → ${(cfg[k]*mult).toFixed(0)}`);
+      }
+    }
+    if (diffs.length > 0) {
+      document.getElementById('btDetail').textContent = '参数变化: ' + diffs.join(' | ');
+    }
+  }
+
+  document.getElementById('btMetrics').innerHTML = metrics.map(m => `
+    <div class="bt-metric">
+      <div class="val">${m.val}</div>
+      <div class="lbl">${m.label}</div>
+    </div>
+  `).join('');
+
+  document.getElementById('btMsg').textContent =
+    `${d.symbols_used?.length || '?'} ETF × ${d.bars_simulated || '?'} 根K线 | 起始 $${(d.starting_nlv||0).toLocaleString()}`;
 }
 
 loadConfig();

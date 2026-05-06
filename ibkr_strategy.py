@@ -55,6 +55,7 @@ POSITION_ALLOC = _cfg.get("position_alloc", POSITION_ALLOC)
 ORDER_TIMEOUT = _cfg.get("order_timeout", ORDER_TIMEOUT)
 STOP_LOSS_PCT = _cfg.get("stop_loss_pct", STOP_LOSS_PCT)
 COOLDOWN_MINUTES = _cfg.get("cooldown_minutes", COOLDOWN_MINUTES)
+REENTRY_COOLDOWN_MINUTES = _cfg.get("reentry_cooldown_minutes", 15)
 MAX_RETRIES = _cfg.get("max_retries", MAX_RETRIES)
 
 # ============ 市场时间 ============
@@ -326,6 +327,7 @@ async def run():
     # 从 IB 重建每个 ETF 的持仓状态，并从上轮 data.json 继承 entry_time + entry_mode
     prev_entry_times = {}
     prev_entry_modes = {}
+    prev_last_sells = {}
     try:
         with open(f"{DASHBOARD_DIR}/data.json") as f:
             prev = json.load(f)
@@ -334,6 +336,9 @@ async def run():
                     prev_entry_times[sym] = p["entry_time"]
                 if p and p.get("mode"):
                     prev_entry_modes[sym] = p["mode"]
+        # Read last sell times
+        for sym, ts in (prev.get("last_sells") or {}).items():
+            prev_last_sells[sym] = ts
     except:
         pass
 
@@ -420,8 +425,21 @@ async def run():
             all_ok = False
             sell_triggers = []
 
+            # ── 卖出冷却检查 ──
+            last_sell_str = prev_last_sells.get(sym)
+            in_reentry = False
+            if last_sell_str:
+                try:
+                    last_sell_dt = datetime.fromisoformat(last_sell_str)
+                    in_reentry = (now - last_sell_dt).total_seconds() < REENTRY_COOLDOWN_MINUTES * 60
+                except:
+                    pass
+
             # ── 无持仓：判断应该用哪种模式 ──
             if pos is None:
+                if in_reentry:
+                    print(f"${price:.2f} RSI={rsi:.1f} ⏳卖出冷却中")
+                    continue
                 mode = determine_mode(rsi, price, sma)
 
                 if mode == "oversold":
@@ -477,6 +495,7 @@ async def run():
                     print(f"  🛑 STOP LOSS {sym}: ${price:.2f} ≤ ${stop_price:.2f} (-{STOP_LOSS_PCT*100:.0f}%)")
                     filled, _ = await place_and_confirm(ib, sym, "SELL", pos["qty"])
                     if filled:
+                        prev_last_sells[sym] = now.isoformat()
                         positions[sym] = None
                         sell_triggers = ["硬止损"]
                 else:
@@ -499,6 +518,7 @@ async def run():
                             print(f"  🔔 SELL {sym}: {sell_triggers}")
                             filled, _ = await place_and_confirm(ib, sym, "SELL", pos["qty"])
                             if filled:
+                                prev_last_sells[sym] = now.isoformat()
                                 positions[sym] = None
                     elif not in_cooldown:
                         print(f"  持有中 (成本 ${entry_price:.2f}, 止损 ${stop_price:.2f})")
@@ -517,8 +537,14 @@ async def run():
 
     finally:
         ib.disconnect()
-        # 写回最新的持仓状态
+        # 写回最新的持仓状态 + 卖出冷却时间
         dashboard["positions"] = {sym: pos for sym, pos in positions.items()}
+        # Build last_sells dict from prev_last_sells + any sells this run
+        last_sells_out = dict(prev_last_sells)
+        for sym in SYMBOLS:
+            if positions.get(sym) is None and prev_last_sells.get(sym):
+                last_sells_out[sym] = prev_last_sells[sym]
+        dashboard["last_sells"] = last_sells_out
         dashboard["symbols_time"] = now.strftime("%H:%M:%S")  # 记录盘中快照时间
 
     with open(f"{DASHBOARD_DIR}/data.json", "w") as f:
