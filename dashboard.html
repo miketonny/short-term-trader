@@ -137,6 +137,32 @@
   }
   .help-toggle:hover { background: rgba(94,106,210,0.1); }
   .section-header { display: flex; align-items: center; }
+
+  /* Config Panel */
+  .config-panel {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; margin-bottom: 16px;
+    display: none;
+  }
+  .config-panel.open { display: block; }
+  .config-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px;
+  }
+  .config-item { display: flex; flex-direction: column; gap: 4px; }
+  .config-item label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+  .config-item input, .config-item select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 13px; font-family: inherit;
+  }
+  .config-item input:focus { border-color: var(--accent); outline: none; }
+  .config-save {
+    margin-top: 12px; padding: 8px 20px; background: var(--accent); color: white;
+    border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .config-save:hover { opacity: 0.9; }
+  .config-save:disabled { opacity: 0.4; cursor: default; }
+
 </style>
 </head>
 <body>
@@ -155,6 +181,19 @@
 </div>
 
 <div class="account-bar" id="accountBar"></div>
+
+
+<div class="section-header">
+  <h2>⚙️ 策略参数</h2>
+  <button class="help-toggle" onclick="toggleConfig()" id="configBtn">展开</button>
+  <span style="font-size:11px;color:var(--muted);margin-left:8px" id="configStatus"></span>
+</div>
+<div class="config-panel" id="configPanel">
+  <div class="config-grid" id="configGrid"></div>
+  <button class="config-save" onclick="saveConfig()">💾 保存参数</button>
+  <span style="font-size:11px;color:var(--muted);margin-left:10px">保存后下一轮 cron 生效</span>
+</div>
+
 
 <div class="grid" id="grid"></div>
 
@@ -219,6 +258,87 @@ function toggleGlossary() {
   if (g.style.display === 'none') { g.style.display = ''; btn.textContent = '收起'; }
   else { g.style.display = 'none'; btn.textContent = '展开'; }
 }
+
+
+const CONFIG_DEFAULTS = {
+  rsi_oversold: 30, rsi_overbought: 70, rsi_trend_overbought: 75, rsi_trend_entry: 50,
+  adx_trending: 20, stop_loss_pct: 0.02, cooldown_minutes: 15, position_alloc: 0.10
+};
+const CONFIG_LABELS = {
+  rsi_oversold: "RSI 超卖阈值", rsi_overbought: "RSI 超买阈值",
+  rsi_trend_overbought: "顺势 RSI 止盈", rsi_trend_entry: "顺势 RSI 入场",
+  adx_trending: "ADX 趋势线", stop_loss_pct: "止损 %",
+  cooldown_minutes: "保护期 (分钟)", position_alloc: "仓位占比"
+};
+const CONFIG_STEP = { rsi_oversold:1, rsi_overbought:1, rsi_trend_overbought:1, rsi_trend_entry:1,
+  adx_trending:1, stop_loss_pct:0.01, cooldown_minutes:1, position_alloc:0.05 };
+const CONFIG_MULT = { stop_loss_pct:100, position_alloc:100 }; // display as %
+
+let currentConfig = {};
+
+function loadConfig() {
+  fetch('strategy_config.json?' + Date.now())
+    .then(r => r.json())
+    .then(cfg => {
+      currentConfig = cfg;
+      renderConfig(cfg);
+    })
+    .catch(() => {
+      currentConfig = CONFIG_DEFAULTS;
+      renderConfig(CONFIG_DEFAULTS);
+    });
+}
+
+function renderConfig(cfg) {
+  const grid = document.getElementById('configGrid');
+  grid.innerHTML = '';
+  for (const [key, label] of Object.entries(CONFIG_LABELS)) {
+    const val = cfg[key] ?? CONFIG_DEFAULTS[key];
+    const mult = CONFIG_MULT[key] || 1;
+    const step = CONFIG_STEP[key] || 1;
+    grid.innerHTML += `
+      <div class="config-item">
+        <label>${label}</label>
+        <input type="number" id="cfg_${key}" value="${val * mult}" step="${step * mult}" min="0">
+      </div>`;
+  }
+}
+
+function toggleConfig() {
+  const p = document.getElementById('configPanel');
+  const b = document.getElementById('configBtn');
+  p.classList.toggle('open');
+  b.textContent = p.classList.contains('open') ? '收起' : '展开';
+}
+
+async function saveConfig() {
+  const btn = document.querySelector('.config-save');
+  btn.disabled = true; btn.textContent = '保存中...';
+
+  const cfg = {};
+  for (const key of Object.keys(CONFIG_LABELS)) {
+    const el = document.getElementById('cfg_' + key);
+    if (!el) continue;
+    const mult = CONFIG_MULT[key] || 1;
+    cfg[key] = parseFloat(el.value) / mult;
+  }
+
+  try {
+    const resp = await fetch('/save_config', { method: 'POST', body: JSON.stringify(cfg) });
+    const result = await resp.json();
+    document.getElementById('configStatus').textContent = result.ok ? '✅ 已保存' : '❌ 保存失败';
+    if (result.ok) {
+      currentConfig = cfg;
+      // Reload signals with new config
+      load();
+    }
+  } catch(e) {
+    document.getElementById('configStatus').textContent = '❌ 连接失败';
+  }
+  btn.disabled = false; btn.textContent = '💾 保存参数';
+  setTimeout(() => document.getElementById('configStatus').textContent = '', 3000);
+}
+
 
 function load() {
   fetch('data.json?' + Date.now())
@@ -354,6 +474,7 @@ function render(data) {
   setInterval(() => { s--; timer.textContent = `刷新 ${s}s`; if(s<=0) s=3; }, 1000);
 }
 
+loadConfig();
 load();
 setInterval(load, 3000);
 </script>

@@ -21,17 +21,41 @@ INTERVAL = "5min"
 CANDLES = 50
 RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
-RSI_TREND_OVERBOUGHT = 75    # 顺势模式止盈线（比超卖更宽松）
+RSI_TREND_OVERBOUGHT = 75
 ADX_TRENDING = 20
-POSITION_ALLOC = 0.10          # 每个 ETF 占账户 NLV 的 10%（7 ETF = 70% 总）
-ORDER_TIMEOUT = 10              # 下单后等成交的秒数
-STOP_LOSS_PCT = 0.02            # 硬止损：买入价 -2% 无条件卖出
-COOLDOWN_MINUTES = 15           # 持仓保护期
+POSITION_ALLOC = 0.10
+ORDER_TIMEOUT = 10
+STOP_LOSS_PCT = 0.02
+COOLDOWN_MINUTES = 15
 
 DASHBOARD_DIR = os.path.expanduser("~/ibkr_dashboard")
 FAIL_COUNT_FILE = os.path.expanduser("~/ibkr_dashboard/fail_count.json")
 MAX_RETRIES = 3
 os.makedirs(DASHBOARD_DIR, exist_ok=True)
+
+# ── 读取策略配置（Dashboard 可编辑）──
+CONFIG_FILE = os.path.expanduser("~/ibkr_dashboard/strategy_config.json")
+def load_config():
+    """从 strategy_config.json 加载参数，覆盖默认值"""
+    try:
+        with open(CONFIG_FILE) as f:
+            cfg = json.load(f)
+        return cfg
+    except:
+        return {}
+
+_cfg = load_config()
+SYMBOLS = _cfg.get("symbols", SYMBOLS)
+RSI_OVERSOLD = _cfg.get("rsi_oversold", RSI_OVERSOLD)
+RSI_OVERBOUGHT = _cfg.get("rsi_overbought", RSI_OVERBOUGHT)
+RSI_TREND_OVERBOUGHT = _cfg.get("rsi_trend_overbought", RSI_TREND_OVERBOUGHT)
+RSI_TREND_ENTRY = _cfg.get("rsi_trend_entry", 50)
+ADX_TRENDING = _cfg.get("adx_trending", ADX_TRENDING)
+POSITION_ALLOC = _cfg.get("position_alloc", POSITION_ALLOC)
+ORDER_TIMEOUT = _cfg.get("order_timeout", ORDER_TIMEOUT)
+STOP_LOSS_PCT = _cfg.get("stop_loss_pct", STOP_LOSS_PCT)
+COOLDOWN_MINUTES = _cfg.get("cooldown_minutes", COOLDOWN_MINUTES)
+MAX_RETRIES = _cfg.get("max_retries", MAX_RETRIES)
 
 # ============ 市场时间 ============
 def get_market_info():
@@ -189,7 +213,7 @@ def check_buy_trend(rsi, price, sma, adx, ml, sl, hist, ph, avg_vol, cur_vol):
     """顺势追涨模式买入条件（4条，全部满足才买入）"""
     macd_golden = ml > sl and hist > 0  # MACD 金叉
     checks = {
-        "RSI>50":       (rsi > 50, f"{rsi:.1f}"),
+        "RSI>50":       (rsi > RSI_TREND_ENTRY, f"{rsi:.1f}"),
         "趋势向上":       (price > sma, f"MA{sma:.2f}"),
         "MACD金叉":      (macd_golden, f"ML={ml:.4f}"),
         "量能确认":      (cur_vol > avg_vol, f"Vol={cur_vol:.0f}" if cur_vol and avg_vol else "N/A")
@@ -211,7 +235,7 @@ def determine_mode(rsi, price, sma):
     """判断当前应该用什么模式：'oversold' / 'trend' / None"""
     if rsi < RSI_OVERSOLD:
         return "oversold"
-    if rsi > 50 and price > sma:
+    if rsi > RSI_TREND_ENTRY and price > sma:
         return "trend"
     return None
 
