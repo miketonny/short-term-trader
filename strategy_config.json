@@ -17,8 +17,9 @@
   "cooldown_minutes": 15,
   "reentry_cooldown_minutes": 15,
   "position_alloc": 0.1,
+  "macd_hist_threshold": 0.1,
+  "interval": "15min",
+  "candles": 100,
   "order_timeout": 10,
-  "interval": "5min",
-  "candles": 50,
   "max_retries": 3
 }

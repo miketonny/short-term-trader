@@ -69,14 +69,13 @@ def calc_macd(closes, fast=12, slow=26, signal=9):
 
 
 # ============ 信号判断 ============
-def check_buy_oversold(rsi, price, sma, upper, middle, lower, adx, ml, sl, hist, ph, avg_vol, cur_vol,
-                       rsi_oversold, adx_trending):
+def check_buy_oversold(rsi, price, sma, upper, middle, lower, adx, ml, sl, hist, ph, avg_vol, cur_vol, rsi_oversold, adx_trending, macd_threshold=0):
     checks = {
         "RSI超卖":   (rsi < rsi_oversold, f"RSI={rsi:.1f}"),
         "触及下轨":   (price <= lower * 1.02, f"${price:.2f}"),
         "趋势向上":   (price > sma, f"MA{sma:.2f}"),
         "趋势明确":   (adx > adx_trending, f"ADX={adx:.1f}"),
-        "MACD转正":   (hist > 0 and ph < hist, f"{hist:.4f}"),
+        "MACD转正":   (hist > macd_threshold and ph < hist, f"{hist:.4f}"),
         "量能确认": (cur_vol > avg_vol, f"Vol={cur_vol:.0f}" if cur_vol and avg_vol else "N/A")
     }
     return all(v[0] for v in checks.values())
@@ -87,8 +86,8 @@ def check_sell_oversold(rsi, price, upper, ml, sl, hist, rsi_overbought):
     if sl > ml and hist < 0: return True
     return False
 
-def check_buy_trend(rsi, price, sma, ml, sl, hist, avg_vol, cur_vol, rsi_trend_entry):
-    macd_golden = ml > sl and hist > 0
+def check_buy_trend(rsi, price, sma, ml, sl, hist, avg_vol, cur_vol, rsi_trend_entry, macd_threshold=0):
+    macd_golden = ml > sl and hist > macd_threshold
     checks = [
         rsi > rsi_trend_entry,
         price > sma,

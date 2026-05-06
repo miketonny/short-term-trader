@@ -17,7 +17,7 @@ IB_PORT = 4002
 CLIENT_ID = 10
 
 SYMBOLS = ["SPY", "QQQ", "IWM", "XLF", "XLE", "XLK", "XLV"]
-INTERVAL = "5min"
+INTERVAL = "5min"  # overridden by config if set
 CANDLES = 50
 RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
@@ -56,6 +56,7 @@ ORDER_TIMEOUT = _cfg.get("order_timeout", ORDER_TIMEOUT)
 STOP_LOSS_PCT = _cfg.get("stop_loss_pct", STOP_LOSS_PCT)
 COOLDOWN_MINUTES = _cfg.get("cooldown_minutes", COOLDOWN_MINUTES)
 REENTRY_COOLDOWN_MINUTES = _cfg.get("reentry_cooldown_minutes", 15)
+MACD_HIST_THRESHOLD = _cfg.get("macd_hist_threshold", 0.05)
 MAX_RETRIES = _cfg.get("max_retries", MAX_RETRIES)
 
 # ============ 市场时间 ============
@@ -188,13 +189,13 @@ def calc_macd(closes, fast=12, slow=26, signal=9):
     return float(m[-1]), float(s[-1]), float(h[-1]), float(h[-2])
 
 # ============ 信号判断 ============
-def check_buy(rsi, price, sma, upper, middle, lower, adx, ml, sl, hist, ph, avg_vol, cur_vol):
+def check_buy(rsi, price, sma, upper, middle, lower, adx, ml, sl, hist, ph, avg_vol, cur_vol, macd_threshold=0):
     checks = {
         "RSI超卖":   (rsi < RSI_OVERSOLD, f"RSI={rsi:.1f}"),
         "触及下轨":   (price <= lower * 1.02, f"${price:.2f}"),
         "趋势向上":   (price > sma, f"MA{sma:.2f}"),
         "趋势明确":   (adx > ADX_TRENDING, f"ADX={adx:.1f}"),
-        "MACD转正":   (hist > 0 and ph < hist, f"{hist:.4f}"),
+        "MACD转正":   (hist > macd_threshold and ph < hist, f"{hist:.4f}"),
         "量能确认": (cur_vol > avg_vol, f"Vol={cur_vol:.0f}" if cur_vol and avg_vol else "N/A")
     }
     return {k: bool(v[0]) for k, v in checks.items()}, all(v[0] for v in checks.values())
@@ -210,9 +211,9 @@ def check_sell(rsi, price, upper, ml, sl, hist):
         triggers.append("MACD死叉")
     return triggers
 
-def check_buy_trend(rsi, price, sma, adx, ml, sl, hist, ph, avg_vol, cur_vol):
+def check_buy_trend(rsi, price, sma, adx, ml, sl, hist, ph, avg_vol, cur_vol, macd_threshold=0):
     """顺势追涨模式买入条件（4条，全部满足才买入）"""
-    macd_golden = ml > sl and hist > 0  # MACD 金叉
+    macd_golden = ml > sl and hist > macd_threshold
     checks = {
         "RSI>50":       (rsi > RSI_TREND_ENTRY, f"{rsi:.1f}"),
         "趋势向上":       (price > sma, f"MA{sma:.2f}"),
@@ -443,7 +444,7 @@ async def run():
                 mode = determine_mode(rsi, price, sma)
 
                 if mode == "oversold":
-                    checks, all_ok = check_buy(rsi, price, sma, upper, mid, lower, adx, ml, sl, hist, ph, avg_vol, cur_vol)
+                    checks, all_ok = check_buy(rsi, price, sma, upper, mid, lower, adx, ml, sl, hist, ph, avg_vol, cur_vol, MACD_HIST_THRESHOLD)
                     score = sum(1 for v in checks.values() if v)
                     print(f"${price:.2f} RSI={rsi:.1f} 🔻超卖 {score}/6", end="")
                     if all_ok:
@@ -459,7 +460,7 @@ async def run():
                         print("")
 
                 elif mode == "trend":
-                    checks, all_ok = check_buy_trend(rsi, price, sma, adx, ml, sl, hist, ph, avg_vol, cur_vol)
+                    checks, all_ok = check_buy_trend(rsi, price, sma, adx, ml, sl, hist, ph, avg_vol, cur_vol, MACD_HIST_THRESHOLD)
                     score = sum(1 for v in checks.values() if v)
                     print(f"${price:.2f} RSI={rsi:.1f} 📈顺势 {score}/4", end="")
                     if all_ok:

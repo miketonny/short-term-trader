@@ -38,7 +38,7 @@ def load_config():
 def fetch_candles(symbol, days=30):
     """Fetch 5min OHLCV for the past N days. Returns dict of arrays or None."""
     resp = requests.get("https://api.twelvedata.com/time_series", params={
-        "symbol": symbol, "interval": "5min", "outputsize": days * 78,  # ~78 5min bars/day
+        "symbol": symbol, "interval": "15min", "outputsize": min(days * 26, 5000),  # max 5000 bars  # ~78 5min bars/day
         "apikey": TWELVE_DATA_KEY
     }, timeout=30)
     data = resp.json()
@@ -67,6 +67,7 @@ def run_backtest(cfg):
     cooldown_minutes = cfg["cooldown_minutes"]
     position_alloc = cfg["position_alloc"]
     reentry_cooldown = cfg.get("reentry_cooldown_minutes", 15)
+    macd_threshold = cfg.get("macd_hist_threshold", 0.05)
 
     cooldown_bars = cooldown_minutes // 5  # bars of 5min
 
@@ -129,12 +130,12 @@ def run_backtest(cfg):
 
                 mode = determine_mode(rsi, price, sma, rsi_oversold, rsi_trend_entry)
                 if mode == "oversold":
-                    if check_buy_oversold(rsi, price, sma, upper, mid, lower, adx, ml, sl, hist, ph, avg_vol, cur_vol, rsi_oversold, adx_trending):
+                    if check_buy_oversold(rsi, price, sma, upper, mid, lower, adx, ml, sl, hist, ph, avg_vol, cur_vol, rsi_oversold, adx_trending, macd_threshold):
                         qty = (nlv * position_alloc) / exec_price
                         positions[sym] = {"entry_price": exec_price, "entry_bar": bar, "mode": mode, "qty": qty}
                         trades.append({"sym": sym, "action": "BUY", "bar": bar, "price": exec_price, "mode": mode, "qty": qty})
                 elif mode == "trend":
-                    if check_buy_trend(rsi, price, sma, ml, sl, hist, avg_vol, cur_vol, rsi_trend_entry):
+                    if check_buy_trend(rsi, price, sma, ml, sl, hist, avg_vol, cur_vol, rsi_trend_entry, macd_threshold):
                         qty = (nlv * position_alloc) / exec_price
                         positions[sym] = {"entry_price": exec_price, "entry_bar": bar, "mode": mode, "qty": qty}
                         trades.append({"sym": sym, "action": "BUY", "bar": bar, "price": exec_price, "mode": mode, "qty": qty})
