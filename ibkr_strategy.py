@@ -340,8 +340,12 @@ async def run():
         # Read last sell times
         for sym, ts in (prev.get("last_sells") or {}).items():
             prev_last_sells[sym] = ts
+        # Read session stats (carry over within same trading day)
+        prev_stats = prev.get("session_stats", {})
+        if prev_stats.get("date") != now.strftime("%Y-%m-%d"):
+            prev_stats = {"date": now.strftime("%Y-%m-%d"), "trades": 0, "wins": 0, "losses": 0, "pnl": 0.0, "symbols_traded": [], "session_start": now.strftime("%H:%M:%S")}
     except:
-        pass
+        prev_stats = {"date": now.strftime("%Y-%m-%d"), "trades": 0, "wins": 0, "losses": 0, "pnl": 0.0, "symbols_traded": [], "session_start": now.strftime("%H:%M:%S")}
 
     positions = {sym: None for sym in SYMBOLS}
     for p in ib.positions():
@@ -392,6 +396,9 @@ async def run():
         ib.disconnect()
         print(f"  非交易时段 ({status_text}) — 保留盘中数据")
         return
+
+    session_stats = dict(prev_stats)
+    session_trades = []  # new trades this run
 
     # ── 每个 ETF 独立分析 + 交易 ──
     try:
@@ -454,6 +461,7 @@ async def run():
                             filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty)
                             if filled:
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
+                                session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "time": now.strftime("%H:%M:%S")})
                         else:
                             print("  (NLV不可用)")
                     else:
@@ -470,6 +478,7 @@ async def run():
                             filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty)
                             if filled:
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
+                                session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "time": now.strftime("%H:%M:%S")})
                         else:
                             print("  (NLV不可用)")
                     else:
@@ -497,6 +506,8 @@ async def run():
                     filled, _ = await place_and_confirm(ib, sym, "SELL", pos["qty"])
                     if filled:
                         prev_last_sells[sym] = now.isoformat()
+                        pnl = (float(trade.fillPrice) - pos["avg_cost"]) * pos["qty"] if hasattr(trade, 'fillPrice') else 0
+                        session_trades.append({"sym": sym, "action": "SELL", "reason": "stop_loss", "pnl": pnl, "time": now.strftime("%H:%M:%S")})
                         positions[sym] = None
                         sell_triggers = ["硬止损"]
                 else:
@@ -520,6 +531,10 @@ async def run():
                             filled, _ = await place_and_confirm(ib, sym, "SELL", pos["qty"])
                             if filled:
                                 prev_last_sells[sym] = now.isoformat()
+                                pnl = (pos.get("last_price", pos["avg_cost"]) - pos["avg_cost"]) * pos["qty"]
+                                # Use current price as approximate fill for P&L calc
+                                pnl = (price - pos["avg_cost"]) * pos["qty"]
+                                session_trades.append({"sym": sym, "action": "SELL", "reason": "technical", "pnl": round(pnl, 2), "time": now.strftime("%H:%M:%S")})
                                 positions[sym] = None
                     elif not in_cooldown:
                         print(f"  持有中 (成本 ${entry_price:.2f}, 止损 ${stop_price:.2f})")
@@ -540,6 +555,19 @@ async def run():
         ib.disconnect()
         # 写回最新的持仓状态 + 卖出冷却时间
         dashboard["positions"] = {sym: pos for sym, pos in positions.items()}
+        # Update session stats
+        for t in session_trades:
+            if t["action"] == "BUY":
+                session_stats["trades"] += 1
+                if t["sym"] not in session_stats["symbols_traded"]:
+                    session_stats["symbols_traded"].append(t["sym"])
+            elif t["action"] == "SELL" and "pnl" in t:
+                session_stats["pnl"] += t["pnl"]
+                if t["pnl"] > 0:
+                    session_stats["wins"] += 1
+                else:
+                    session_stats["losses"] += 1
+        dashboard["session_stats"] = session_stats
         # Build last_sells dict from prev_last_sells + any sells this run
         last_sells_out = dict(prev_last_sells)
         for sym in SYMBOLS:

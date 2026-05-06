@@ -208,6 +208,17 @@
 </div>
 
 
+
+<div class="section-header">
+  <h2>📋 今日战报</h2>
+  <span style="font-size:11px;color:var(--muted);margin-left:8px" id="reportDate"></span>
+</div>
+<div class="config-panel open" id="reportPanel">
+  <div class="bt-metrics" id="reportMetrics"></div>
+  <div style="font-size:12px;color:var(--muted)" id="reportDetail"></div>
+</div>
+
+
 <div class="grid" id="grid"></div>
 
 <div class="section-header">
@@ -365,6 +376,51 @@ function load() {
 
 function fmt(n) { return n != null ? n.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2}) : '--'; }
 
+
+function renderReport(data) {
+  const stats = data.session_stats;
+  if (!stats) {
+    document.getElementById('reportPanel').style.display = 'none';
+    return;
+  }
+  document.getElementById('reportPanel').style.display = 'block';
+  document.getElementById('reportDate').textContent = stats.date || '';
+
+  const totalTrades = stats.trades || 0;
+  const wins = stats.wins || 0;
+  const losses = stats.losses || 0;
+  const wr = totalTrades > 0 ? (wins / (wins + losses) * 100).toFixed(1) : '--';
+  const pnl = (stats.pnl || 0).toFixed(2);
+  const pnlColor = parseFloat(pnl) >= 0 ? 'var(--green)' : 'var(--red)';
+
+  document.getElementById('reportMetrics').innerHTML = `
+    <div class="bt-metric">
+      <div class="val">${totalTrades}</div>
+      <div class="lbl">交易次数</div>
+    </div>
+    <div class="bt-metric">
+      <div class="val">${wr}%</div>
+      <div class="lbl">胜率</div>
+    </div>
+    <div class="bt-metric">
+      <div class="val" style="color:${pnlColor}">$${pnl}</div>
+      <div class="lbl">当日盈亏</div>
+    </div>
+    <div class="bt-metric">
+      <div class="val">${wins}W / ${losses}L</div>
+      <div class="lbl">胜负比</div>
+    </div>
+  `;
+
+  const symbols = stats.symbols_traded || [];
+  const session = stats.session_start || '?';
+  document.getElementById('reportDetail').textContent =
+    symbols.length > 0
+      ? `交易品种: ${symbols.join(', ')} | 开盘: ${session}`
+      : `今日无交易 | 开盘: ${session}`;
+}
+
+
 function render(data) {
   const mk = data.market_status || 'weekend';
   const badge = document.getElementById('marketBadge');
@@ -374,6 +430,7 @@ function render(data) {
   document.getElementById('statusLine').textContent =
     `最后更新: ${data.time} NZT · ${data.date}` + (data.symbols_time ? ` · 盘中快照: ${data.symbols_time}` : '');
 
+  renderReport(data);
   document.getElementById('liveDot').innerHTML =
     '<span class="status-dot dot-live"></span> 运行中';
 
