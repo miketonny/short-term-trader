@@ -10,8 +10,11 @@ os.chdir(DASHBOARD_DIR)
 
 
 class Handler(SimpleHTTPRequestHandler):
+    def _path(self):
+        return self.path.split("?")[0]
+
     def do_POST(self):
-        if self.path == "/save_config":
+        if self._path() == "/save_config":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
             try:
@@ -28,12 +31,13 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_response(400)
                 self.end_headers()
                 self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
-        elif self.path == "/run_backtest":
+        elif self._path() == "/run_backtest":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "running", "message": "Backtest started — check /backtest_result"}).encode())
+            Handler._bt_running = True
             # Run backtest in background
             import subprocess, threading
             def run():
@@ -43,12 +47,15 @@ class Handler(SimpleHTTPRequestHandler):
                                    capture_output=True, text=True, timeout=120, cwd=str(DASHBOARD_DIR))
                 except:
                     pass
+                Handler._bt_running = False
             threading.Thread(target=run, daemon=True).start()
         else:
             super().do_POST()
 
+    _bt_running = False  # cache backtest running state
+
     def do_GET(self):
-        if self.path == "/backtest_result":
+        if self._path() == "/backtest_result":
             result_path = DASHBOARD_DIR / "backtest_result.json"
             prev_path = DASHBOARD_DIR / "strategy_config_prev.json"
             resp = {"status": "idle"}
@@ -58,12 +65,9 @@ class Handler(SimpleHTTPRequestHandler):
                     resp["status"] = "done"
                 except:
                     resp = {"status": "error", "message": "Failed to parse results"}
-            else:
-                # Check if still running
-                import subprocess
-                r = subprocess.run(["pgrep", "-f", "backtest.py"], capture_output=True)
-                if r.returncode == 0:
-                    resp["status"] = "running"
+            elif Handler._bt_running:
+                resp["status"] = "running"
+                Handler._bt_running = False  # reset — if it's done, file will exist next poll
             # Attach previous config if exists
             if prev_path.exists():
                 try:
