@@ -1,13 +1,4 @@
 {
-  "symbols": [
-    "SPY",
-    "QQQ",
-    "IWM",
-    "XLF",
-    "XLE",
-    "XLK",
-    "XLV"
-  ],
   "rsi_oversold": 30,
   "rsi_overbought": 70,
   "rsi_trend_overbought": 75,
@@ -15,11 +6,7 @@
   "adx_trending": 20,
   "stop_loss_pct": 0.03,
   "cooldown_minutes": 15,
-  "reentry_cooldown_minutes": 15,
   "position_alloc": 0.1,
   "macd_hist_threshold": 0.1,
-  "interval": "15min",
-  "candles": 100,
-  "order_timeout": 10,
-  "max_retries": 3
+  "reentry_cooldown_minutes": 15
 }

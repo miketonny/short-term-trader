@@ -287,19 +287,22 @@ function toggleGlossary() {
 const CONFIG_DEFAULTS = {
   rsi_oversold: 30, rsi_overbought: 70, rsi_trend_overbought: 75, rsi_trend_entry: 50,
   adx_trending: 20, stop_loss_pct: 0.02, cooldown_minutes: 15, position_alloc: 0.10,
-  macd_hist_threshold: 0.05, reentry_cooldown_minutes: 15
+  macd_hist_threshold: 0.05, reentry_cooldown_minutes: 15,
+  interval: '15min', candles: 100
 };
 const CONFIG_LABELS = {
   rsi_oversold: "RSI 超卖阈值", rsi_overbought: "RSI 超买阈值",
   rsi_trend_overbought: "顺势 RSI 止盈", rsi_trend_entry: "顺势 RSI 入场",
   adx_trending: "ADX 趋势线", stop_loss_pct: "止损 %",
   cooldown_minutes: "保护期 (分钟)", position_alloc: "仓位占比",
-  macd_hist_threshold: "MACD柱阈值", reentry_cooldown_minutes: "卖出冷却(分钟)"
+  macd_hist_threshold: "MACD柱阈值", reentry_cooldown_minutes: "卖出冷却(分钟)",
+  interval: "K线周期", candles: "K线数量"
 };
 const CONFIG_STEP = { rsi_oversold:1, rsi_overbought:1, rsi_trend_overbought:1, rsi_trend_entry:1,
   adx_trending:1, stop_loss_pct:0.01, cooldown_minutes:1, position_alloc:0.05,
-  macd_hist_threshold:0.01, reentry_cooldown_minutes:1 };
-const CONFIG_MULT = { stop_loss_pct:100, position_alloc:100, macd_hist_threshold:100 }; // display as % and cents
+  macd_hist_threshold:0.01, reentry_cooldown_minutes:1,
+  interval:1, candles:10 };
+const CONFIG_MULT = { stop_loss_pct:100, position_alloc:100 };
 
 let currentConfig = {};
 
@@ -323,10 +326,11 @@ function renderConfig(cfg) {
     const val = cfg[key] ?? CONFIG_DEFAULTS[key];
     const mult = CONFIG_MULT[key] || 1;
     const step = CONFIG_STEP[key] || 1;
+    const isText = key === 'interval';
     grid.innerHTML += `
       <div class="config-item">
         <label>${label}</label>
-        <input type="number" id="cfg_${key}" value="${val * mult}" step="${step * mult}" min="0">
+        <input type="${isText ? 'text' : 'number'}" id="cfg_${key}" value="${isText ? val : val * mult}" ${isText ? '' : `step="${step * mult}" min="0"`}>
       </div>`;
   }
 }
@@ -347,7 +351,7 @@ async function saveConfig() {
     const el = document.getElementById('cfg_' + key);
     if (!el) continue;
     const mult = CONFIG_MULT[key] || 1;
-    cfg[key] = parseFloat(el.value) / mult;
+    cfg[key] = key === 'interval' ? el.value : parseFloat(el.value) / mult;
   }
 
   try {
