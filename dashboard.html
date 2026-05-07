@@ -326,12 +326,22 @@ function renderConfig(cfg) {
     const val = cfg[key] ?? CONFIG_DEFAULTS[key];
     const mult = CONFIG_MULT[key] || 1;
     const step = CONFIG_STEP[key] || 1;
-    const isText = key === 'interval';
-    grid.innerHTML += `
-      <div class="config-item">
-        <label>${label}</label>
-        <input type="${isText ? 'text' : 'number'}" id="cfg_${key}" value="${isText ? val : val * mult}" ${isText ? '' : `step="${step * mult}" min="0"`}>
-      </div>`;
+    if (key === 'interval') {
+      const opts = ['1min','5min','15min','30min','1h'];
+      grid.innerHTML += `
+        <div class="config-item">
+          <label>${label}</label>
+          <select id="cfg_${key}" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:13px;font-family:inherit">
+            ${opts.map(o => `<option value="${o}" ${o===val?'selected':''}>${o}</option>`).join('')}
+          </select>
+        </div>`;
+    } else {
+      grid.innerHTML += `
+        <div class="config-item">
+          <label>${label}</label>
+          <input type="number" id="cfg_${key}" value="${val * mult}" step="${step * mult}" min="0">
+        </div>`;
+    }
   }
 }
 
@@ -573,16 +583,23 @@ async function runBacktest() {
 }
 
 function pollBacktest() {
+  let attempts = 0;
   const btn = document.getElementById('btBtn');
   const msg = document.getElementById('btMsg');
 
   btPolling = setInterval(async () => {
+    attempts++;
     try {
       const r = await fetch('/backtest_result?' + Date.now());
       const d = await r.json();
 
       if (d.status === 'running') {
-        msg.textContent = '⏳ 模拟交易中...';
+        msg.textContent = '⏳ 模拟交易中... (' + (attempts*2) + 's)';
+        if (attempts > 30) { // 1 min timeout
+          clearInterval(btPolling);
+          msg.textContent = '⏰ 回测超时（1分钟）— 请重试';
+          btn.disabled = false; btn.textContent = '▶ 运行回测';
+        }
       } else if (d.status === 'done') {
         clearInterval(btPolling);
         renderBacktest(d);
@@ -594,9 +611,19 @@ function pollBacktest() {
         btn.disabled = false; btn.textContent = '▶ 运行回测';
       }
     } catch(e) {
-      // still loading
+      msg.textContent = '⏳ 连接中... (' + (attempts*2) + 's)';
     }
   }, 2000);
+}
+
+// Auto-load existing backtest result on page load
+function loadBacktestResult() {
+  fetch('/backtest_result').then(r => r.json()).then(d => {
+    if (d.status === 'done') {
+      document.getElementById('btPanel').classList.add('open');
+      renderBacktest(d);
+    }
+  }).catch(() => {});
 }
 
 function renderBacktest(d) {
@@ -641,6 +668,7 @@ function renderBacktest(d) {
 
 loadConfig();
 load();
+loadBacktestResult();
 setInterval(load, 3000);
 </script>
 </body>
