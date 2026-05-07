@@ -2,7 +2,7 @@
 
 Automated multi-ETF short-term trading on Interactive Brokers with a dual-mode
 strategy. Runs on a cron schedule during US market hours, displays a real-time
-dashboard.
+dashboard with backtesting and parameter controls.
 
 ## Glossary
 
@@ -34,9 +34,6 @@ The trading logic applied to an ETF. Two modes exist:
 An ETF with RSI between 30 and 50 (or RSI > 50 but below MA20) produces no
 Mode and waits.
 
-A Position records the Mode under which it was entered. The same Mode determines
-exit logic throughout the Position's lifetime.
-
 ### Position
 A currently held quantity of an ETF. Tracks: symbol, quantity (fractional
 shares), average entry cost, entry time, and entry Mode. Positions are rebuilt
@@ -47,9 +44,13 @@ previous Snapshot.
 A 15-minute window after entering a Position during which technical sell Signals
 are ignored. Hard Stop Loss is NOT subject to Cooldown.
 
+### Re-entry Cooldown
+A 15-minute window after selling a Position during which the same symbol cannot
+be bought again. Prevents immediate re-entry on whipsaw signals.
+
 ### Stop Loss
-A hard -2% exit threshold measured from entry cost. Always active, never subject
-to Cooldown. If the current price drops to or below entry × 0.98, the Position
+A hard -3% exit threshold measured from entry cost. Always active, never subject
+to Cooldown. If the current price drops to or below entry × 0.97, the Position
 is immediately sold.
 
 ### Circuit Breaker
@@ -61,10 +62,30 @@ resume.
 Each ETF receives 10% of the account's Net Liquidation Value (USD). Fractional
 shares are used. With 7 ETFs, maximum deployed capital is 70%.
 
+### Backtest
+A 30-day historical simulation that replays the strategy against past OHLCV data.
+Uses no look-ahead bias (signal from candle N, execution at candle N+1 open)
+with 0.1% slippage. Results show trade count, win rate, total P&L, and max
+drawdown. Triggered from the Dashboard and compared against the previous
+parameter set.
+
+### Session Stats
+Per-day trading statistics tracked in real-time: total trades, wins, losses,
+P&L, and symbols traded. Reset at the start of each new trading day.
+Displayed in the Dashboard's "今日战报" panel.
+
+### MACD Histogram Threshold
+The minimum absolute value of the MACD histogram for a valid buy Signal.
+Set to 0.10 for 15-minute candles. Filters out weak crossovers where the
+histogram barely crosses zero.
+
 ## Architecture
 
 ```
-Twelve Data API ──→ OHLCV candles ──→ numpy indicators
+strategy_config.json ←─ Dashboard (parameter panel + save)
+        │
+        ▼
+Twelve Data API ──→ 15-min OHLCV ──→ numpy indicators
                                          │
                                          ▼
                                    Signal evaluation
@@ -76,10 +97,30 @@ Twelve Data API ──→ OHLCV candles ──→ numpy indicators
                                    Hermes cron (every 5 min)
                                          │
                                          ▼
-                                   Dashboard HTML (data.json)
+                                   data.json ──→ Dashboard HTML (server.py)
+                                         │
+                                   backtest.py (30-day simulation)
 ```
 
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `ibkr_strategy.py` | Live trading strategy (reads config, trades via IBKR) |
+| `backtest.py` | 30-day historical backtest engine |
+| `strategy_core.py` | Shared indicator calculation + signal functions |
+| `server.py` | HTTP server (serves dashboard, config save, backtest trigger) |
+| `dashboard.html` | Real-time monitoring dashboard with config/backtest panels |
+| `strategy_config.json` | Editable strategy parameters |
+| `data.json` | Live snapshot output (market data, signals, session stats) |
+| `CONTEXT.md` | This file — domain glossary and architecture |
+
 ## Decisions
+
+### Why 15-minute candles?
+5-minute MACD signals had 19-21% win rate and consistent losses (-$5K to -$13K
+in backtests). 15-minute candles increased win rate to 43% with first positive
+P&L (+$204). Longer timeframe filters MACD noise naturally.
 
 ### Why two Modes instead of one?
 A pure oversold-bounce strategy only trades during dips. In sustained bull
@@ -89,21 +130,20 @@ in rallies.
 ### Why 7 ETFs at 10% each?
 Three broad-market ETFs (SPY, QQQ, IWM) plus four sector ETFs (XLF, XLE, XLK,
 XLV) provide exposure to different market segments. At 10% per ETF, total
-deployment maxes at 70%, leaving 30% buffer. This also stays within the Twelve
-Data free tier (7 API calls × 78 runs/day = 546, under 800 limit).
+deployment maxes at 70%, leaving 30% buffer.
 
-### Why fractional shares?
-With a small account, 10% of NLV may not buy a whole share of SPY (~$720).
-Fractional shares via IBKR SMART routing allow exact allocation regardless of
-share price.
+### Why 5-minute cron with 15-minute candles?
+The cron runs every 5 minutes to pick up new candle closures quickly. The
+15-minute candle interval means most runs see no new data (the candle hasn't
+closed yet), but the system catches the signal within 5 minutes of candle close.
 
-### Why 5-minute intervals instead of 3?
-7 ETFs × 130 runs (3-min) = 910 API calls/day, exceeding the Twelve Data free
-800 limit. 5-minute intervals = 78 runs/day = 546 calls. Each run uses fresh
-non-overlapping 5-min candles, improving Signal quality over overlapping 3-min
-polls.
+### Why MACD histogram threshold 0.10?
+Without a threshold, MACD golden crosses with histogram values of 0.001 produce
+false signals. Threshold 0.10 on 15-min candles filters noise while preserving
+meaningful crossovers. Backtest confirmed: 0.10 → +$204, 0.50 → -$293.
 
-### Why Yahoo Finance RSS for news?
-Twelve Data has no news endpoint. Yahoo Finance RSS is free, requires only a
-User-Agent header, and provides 6 headlines per poll. Used for Dashboard
-display, not trading decisions.
+### Why HTML dashboard instead of React/TypeScript?
+The single-file HTML dashboard (< 500 lines) covers all current needs: config
+editing, backtest triggering, signal display, session stats, and news. Adding a
+framework would introduce build complexity without enabling new capabilities.
+Chart libraries can be added via CDN `<script>` tags when needed.
