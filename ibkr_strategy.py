@@ -261,7 +261,7 @@ async def place_and_confirm(ib, sym, action, quantity):
     contract = Stock(sym, "SMART", "USD")
     await ib.qualifyContractsAsync(contract)
     order = MarketOrder(action, quantity)
-    trade = await ib.placeOrderAsync(contract, order)
+    trade = ib.placeOrder(contract, order)
 
     # 等待成交
     deadline = time.time() + ORDER_TIMEOUT
