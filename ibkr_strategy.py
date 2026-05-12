@@ -277,7 +277,7 @@ async def place_and_confirm(ib, sym, action, quantity):
             return False, None
 
     print(f"  ⏰ {sym} 订单超时 ({ORDER_TIMEOUT}s), 当前状态: {trade.orderStatus.status}")
-    await ib.cancelOrderAsync(order)
+    ib.cancelOrder(order)
     return False, None
 
 # ============ 主逻辑 ============
