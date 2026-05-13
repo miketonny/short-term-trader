@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import asyncio; asyncio.set_event_loop(asyncio.new_event_loop())
 """
 V1: 多品种并行 ETF 短线策略 + 看板数据输出
 每个 ETF 独立追踪持仓、独立买卖、独立确认成交。
@@ -24,6 +25,7 @@ RSI_OVERBOUGHT = 70
 RSI_TREND_OVERBOUGHT = 75
 ADX_TRENDING = 20
 POSITION_ALLOC = 0.10
+LEVERAGE = 1.0
 ORDER_TIMEOUT = 10
 STOP_LOSS_PCT = 0.02
 COOLDOWN_MINUTES = 15
@@ -52,6 +54,7 @@ RSI_TREND_OVERBOUGHT = _cfg.get("rsi_trend_overbought", RSI_TREND_OVERBOUGHT)
 RSI_TREND_ENTRY = _cfg.get("rsi_trend_entry", 50)
 ADX_TRENDING = _cfg.get("adx_trending", ADX_TRENDING)
 POSITION_ALLOC = _cfg.get("position_alloc", POSITION_ALLOC)
+LEVERAGE = _cfg.get("leverage", LEVERAGE)
 ORDER_TIMEOUT = _cfg.get("order_timeout", ORDER_TIMEOUT)
 STOP_LOSS_PCT = _cfg.get("stop_loss_pct", STOP_LOSS_PCT)
 COOLDOWN_MINUTES = _cfg.get("cooldown_minutes", COOLDOWN_MINUTES)
@@ -344,8 +347,10 @@ async def run():
         prev_stats = prev.get("session_stats", {})
         if prev_stats.get("date") != now.strftime("%Y-%m-%d"):
             prev_stats = {"date": now.strftime("%Y-%m-%d"), "trades": 0, "wins": 0, "losses": 0, "pnl": 0.0, "symbols_traded": [], "session_start": now.strftime("%H:%M:%S")}
+        trade_history = prev.get("trade_history", [])
     except:
         prev_stats = {"date": now.strftime("%Y-%m-%d"), "trades": 0, "wins": 0, "losses": 0, "pnl": 0.0, "symbols_traded": [], "session_start": now.strftime("%H:%M:%S")}
+        trade_history = []
 
     positions = {sym: None for sym in SYMBOLS}
     for p in ib.positions():
@@ -386,11 +391,14 @@ async def run():
             dashboard["symbols"] = existing.get("symbols", {})
             dashboard["news"] = existing.get("news", news)  # 优先用旧新闻
             dashboard["symbols_time"] = existing.get("symbols_time")  # 保留盘中快照时间
+            dashboard["session_stats"] = existing.get("session_stats", prev_stats)
+            dashboard["trade_history"] = existing.get("trade_history", [])
             # 保留盘中持仓（不从 IB 覆盖）
             if existing.get("market_status") in ("open",):
                 dashboard["positions"] = existing.get("positions", dashboard["positions"])
         except:
-            pass
+            dashboard["session_stats"] = prev_stats
+            dashboard["trade_history"] = []
         with open(f"{DASHBOARD_DIR}/data.json", "w") as f:
             json.dump(dashboard, f)
         ib.disconnect()
@@ -456,12 +464,12 @@ async def run():
                     print(f"${price:.2f} RSI={rsi:.1f} 🔻超卖 {score}/6", end="")
                     if all_ok:
                         if nlv and nlv > 0:
-                            qty = (nlv * POSITION_ALLOC) / price
+                            qty = int((nlv * POSITION_ALLOC * LEVERAGE) / price)
                             print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
                             filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty)
                             if filled:
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
-                                session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "time": now.strftime("%H:%M:%S")})
+                                session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "qty": qty, "time": now.strftime("%H:%M:%S")})
                         else:
                             print("  (NLV不可用)")
                     else:
@@ -473,12 +481,12 @@ async def run():
                     print(f"${price:.2f} RSI={rsi:.1f} 📈顺势 {score}/4", end="")
                     if all_ok:
                         if nlv and nlv > 0:
-                            qty = (nlv * POSITION_ALLOC) / price
+                            qty = int((nlv * POSITION_ALLOC * LEVERAGE) / price)
                             print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
                             filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty)
                             if filled:
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
-                                session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "time": now.strftime("%H:%M:%S")})
+                                session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "qty": qty, "time": now.strftime("%H:%M:%S")})
                         else:
                             print("  (NLV不可用)")
                     else:
@@ -507,7 +515,7 @@ async def run():
                     if filled:
                         prev_last_sells[sym] = now.isoformat()
                         pnl = (float(trade.fillPrice) - pos["avg_cost"]) * pos["qty"] if hasattr(trade, 'fillPrice') else 0
-                        session_trades.append({"sym": sym, "action": "SELL", "reason": "stop_loss", "pnl": pnl, "time": now.strftime("%H:%M:%S")})
+                        session_trades.append({"sym": sym, "action": "SELL", "reason": "stop_loss", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "time": now.strftime("%H:%M:%S")})
                         positions[sym] = None
                         sell_triggers = ["硬止损"]
                 else:
@@ -534,7 +542,7 @@ async def run():
                                 pnl = (pos.get("last_price", pos["avg_cost"]) - pos["avg_cost"]) * pos["qty"]
                                 # Use current price as approximate fill for P&L calc
                                 pnl = (price - pos["avg_cost"]) * pos["qty"]
-                                session_trades.append({"sym": sym, "action": "SELL", "reason": "technical", "pnl": round(pnl, 2), "time": now.strftime("%H:%M:%S")})
+                                session_trades.append({"sym": sym, "action": "SELL", "reason": "technical", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "time": now.strftime("%H:%M:%S")})
                                 positions[sym] = None
                     elif not in_cooldown:
                         print(f"  持有中 (成本 ${entry_price:.2f}, 止损 ${stop_price:.2f})")
@@ -568,6 +576,7 @@ async def run():
                 else:
                     session_stats["losses"] += 1
         dashboard["session_stats"] = session_stats
+        dashboard["trade_history"] = trade_history + session_trades
         # Build last_sells dict from prev_last_sells + any sells this run
         last_sells_out = dict(prev_last_sells)
         for sym in SYMBOLS:

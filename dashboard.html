@@ -163,6 +163,17 @@
   .config-save:hover { opacity: 0.9; }
   .config-save:disabled { opacity: 0.4; cursor: default; }
 
+
+  /* Trade History */
+  .trade-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  .trade-table th { text-align: left; padding: 6px 10px; color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+  .trade-table td { padding: 7px 10px; border-bottom: 1px solid rgba(255,255,255,0.03); }
+  .trade-table tr:hover { background: rgba(255,255,255,0.02); }
+  .trade-buy { color: #5e6ad2; font-weight: 600; }
+  .trade-sell { font-weight: 600; }
+  .trade-win { color: var(--green); }
+  .trade-loss { color: var(--red); }
+  .trade-reason { font-size: 11px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -216,6 +227,19 @@
 <div class="config-panel open" id="reportPanel">
   <div class="bt-metrics" id="reportMetrics"></div>
   <div style="font-size:12px;color:var(--muted)" id="reportDetail"></div>
+</div>
+<div class="section-header">
+  <h2>📜 交易记录</h2>
+</div>
+<div class="config-panel open" id="tradePanel">
+  <table class="trade-table">
+    <thead>
+      <tr><th>时间</th><th>品种</th><th>方向</th><th>数量</th><th>价格</th><th>盈亏</th></tr>
+    </thead>
+    <tbody id="tradeBody">
+      <tr><td colspan="6" style="color:var(--muted);text-align:center">暂无交易记录</td></tr>
+    </tbody>
+  </table>
 </div>
 
 
@@ -391,6 +415,30 @@ function load() {
 function fmt(n) { return n != null ? n.toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2}) : '--'; }
 
 
+
+function renderTradeHistory(data) {
+  const history = data.trade_history || [];
+  const tbody = document.getElementById('tradeBody');
+  if (history.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--muted);text-align:center">暂无交易记录</td></tr>';
+    return;
+  }
+  tbody.innerHTML = history.slice(-30).reverse().map(t => {
+    const dirClass = t.action === 'BUY' ? 'trade-buy' : (t.pnl >= 0 ? 'trade-sell trade-win' : 'trade-sell trade-loss');
+    const dirText = t.action === 'BUY' ? '买入' : '卖出';
+    const pnlText = t.action === 'SELL' && t.pnl != null ? '$' + t.pnl.toFixed(2) : '--';
+    const reasonTag = t.reason ? ' <span class="trade-reason">(' + (t.reason === 'stop_loss' ? '止损' : '信号') + ')</span>' : '';
+    return '<tr>' +
+      '<td style="color:var(--muted)">' + (t.time || '') + '</td>' +
+      '<td style="font-weight:600">' + (t.sym || '') + '</td>' +
+      '<td class="' + dirClass + '">' + dirText + reasonTag + '</td>' +
+      '<td>' + (t.qty || '') + '</td>' +
+      '<td>$' + (t.price != null ? t.price.toFixed(2) : '--') + '</td>' +
+      '<td class="' + (t.action === 'SELL' && t.pnl != null ? (t.pnl >= 0 ? 'trade-win' : 'trade-loss') : '') + '" style="font-weight:600">' + pnlText + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
 function renderReport(data) {
   const stats = data.session_stats;
   if (!stats) {
@@ -445,6 +493,7 @@ function render(data) {
     `最后更新: ${data.time} NZT · ${data.date}` + (data.symbols_time ? ` · 盘中快照: ${data.symbols_time}` : '');
 
   renderReport(data);
+  renderTradeHistory(data);
   document.getElementById('liveDot').innerHTML =
     '<span class="status-dot dot-live"></span> 运行中';
 
