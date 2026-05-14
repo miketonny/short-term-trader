@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Forex Strategy Dashboard</title>
+<style>
+  :root {
+    --bg: #0a0a0f; --card: #13131a; --border: #1e1e2a;
+    --green: #22c55e; --red: #ef4444; --yellow: #eab308;
+    --text: #e2e8f0; --muted: #94a3b8; --accent: #5e6ad2;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Inter', -apple-system, sans-serif;
+    padding: 24px; min-height: 100vh; max-width: 1200px; margin: 0 auto;
+  }
+  h1 { font-size: 22px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+  h2 { font-size: 15px; font-weight: 600; margin: 20px 0 12px; }
+
+  /* Status */
+  .status-bar {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; margin: 14px 0; font-size: 13px;
+  }
+  .status-badge {
+    padding: 3px 10px; border-radius: 6px; font-weight: 600; font-size: 12px;
+  }
+  .status-live { background: rgba(34,197,94,0.15); color: var(--green); }
+  .status-paused { background: rgba(234,179,8,0.15); color: var(--yellow); }
+
+  .dot-live { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; background: var(--green); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* Account */
+  .account-bar {
+    display: flex; gap: 20px;
+    padding: 10px 16px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; margin-bottom: 16px; font-size: 13px;
+  }
+  .account-item { display: flex; flex-direction: column; gap: 2px; }
+  .account-label { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+  .account-value { font-weight: 600; font-size: 16px; }
+
+  /* Cards */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px;
+  }
+  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .pair-name {
+    font-size: 22px; font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), #818cf8);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .price { font-size: 20px; font-weight: 600; }
+
+  .pos-badge {
+    padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+    display: inline-block; margin-bottom: 8px;
+  }
+  .pos-yes { background: rgba(34,197,94,0.15); color: var(--green); border: 1px solid rgba(34,197,94,0.3); }
+  .pos-info { font-size: 12px; color: var(--muted); margin-bottom: 10px; display: flex; gap: 12px; }
+
+  /* Signals */
+  .signals { display: flex; flex-direction: column; gap: 5px; }
+  .signal {
+    display: flex; justify-content: space-between; padding: 5px 8px;
+    border-radius: 6px; font-size: 12px; background: rgba(255,255,255,0.03);
+  }
+  .signal.pass { background: rgba(34,197,94,0.06); }
+  .signal .icon { font-size: 14px; }
+
+  .score-bar { margin-top: 8px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.05); overflow: hidden; }
+  .score-fill { height: 100%; border-radius: 2px; transition: width 0.5s; }
+  .indicators { display: flex; justify-content: space-between; margin-top: 4px; font-size: 11px; color: var(--muted); }
+
+  .sell-tag {
+    padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
+    background: rgba(239,68,68,0.15); color: var(--red);
+    display: inline-block; margin-top: 8px; margin-right: 4px;
+  }
+  .hold-info { font-size: 12px; margin-top: 8px; }
+
+  /* Report */
+  .report-panel {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; margin-bottom: 14px;
+  }
+  .bt-metrics { display: flex; gap: 24px; flex-wrap: wrap; }
+  .bt-metric { display: flex; flex-direction: column; gap: 2px; }
+  .bt-metric .val { font-size: 20px; font-weight: 700; }
+  .bt-metric .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+
+  /* Trade History */
+  .trade-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  .trade-table th { text-align: left; padding: 6px 10px; color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+  .trade-table td { padding: 7px 10px; border-bottom: 1px solid rgba(255,255,255,0.03); }
+  .trade-table tr:hover { background: rgba(255,255,255,0.02); }
+  .trade-buy { color: #5e6ad2; font-weight: 600; }
+  .trade-sell { font-weight: 600; }
+  .trade-win { color: var(--green); }
+  .trade-loss { color: var(--red); }
+  .trade-reason { font-size: 11px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<h1>
+  <span>💱 Forex Strategy</span>
+  <span class="status-badge status-live" id="statusBadge">🟢 交易中</span>
+</h1>
+<div class="status-bar">
+  <span id="statusLine" style="color:var(--muted);font-size:12px">加载中...</span>
+  <span style="margin-left:auto"><span class="dot-live"></span> 运行中</span>
+</div>
+
+<div class="account-bar">
+  <div class="account-item">
+    <span class="account-label">Net Liquidation</span>
+    <span class="account-value" id="accountNLV">--</span>
+  </div>
+</div>
+
+<!-- Session Report -->
+<h2>📋 今日战报</h2>
+<div class="report-panel" id="reportPanel">
+  <div class="bt-metrics" id="reportMetrics"></div>
+  <div style="font-size:12px;color:var(--muted);margin-top:8px" id="reportDetail"></div>
+</div>
+
+<!-- Pair Cards -->
+<h2>📊 货币对</h2>
+<div class="grid" id="grid"></div>
+
+<!-- Trade History -->
+<h2>📜 交易记录</h2>
+<div class="report-panel">
+  <table class="trade-table">
+    <thead>
+      <tr><th>时间</th><th>品种</th><th>方向</th><th>数量</th><th>价格</th><th>盈亏</th></tr>
+    </thead>
+    <tbody id="tradeBody">
+      <tr><td colspan="6" style="color:var(--muted);text-align:center">暂无交易记录</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+const PAIRS = ["EUR.USD", "GBP.USD", "USD.JPY"];
+const PAIR_NAMES = { "EUR.USD": "欧元/美元", "GBP.USD": "英镑/美元", "USD.JPY": "美元/日元" };
+const DECIMALS = { "EUR.USD": 5, "GBP.USD": 5, "USD.JPY": 3 };
+
+function load() {
+  fetch('data.json?' + Date.now())
+    .then(r => r.json())
+    .then(data => render(data))
+    .catch(() => {});
+}
+
+function fmt(n, decimals) {
+  if (n == null || isNaN(n)) return '--';
+  return n.toFixed(decimals || 2);
+}
+
+function render(data) {
+  // Status
+  const badge = document.getElementById('statusBadge');
+  badge.textContent = data.status_text || '🟢 交易中';
+  badge.className = 'status-badge ' + (data.status === 'paused' ? 'status-paused' : 'status-live');
+
+  document.getElementById('statusLine').textContent =
+    `最后更新: ${data.time} · ${data.date}`;
+
+  // Account
+  document.getElementById('accountNLV').textContent =
+    data.nlv != null ? '$' + data.nlv.toLocaleString('en-US', {minimumFractionDigits:2}) : '--';
+
+  // Report
+  renderReport(data);
+
+  // Pairs
+  const grid = document.getElementById('grid');
+  const pairs = data.pairs || {};
+  const positions = data.positions || {};
+
+  grid.innerHTML = PAIRS.map(pair => {
+    const d = pairs[pair] || {};
+    const pos = positions[pair];
+    const price = d.price;
+    const rsi = d.rsi;
+    const mode = d.mode;
+    const checks = d.checks || {};
+    const score = d.score || 0;
+    const allOk = d.all_ok;
+    const sellTriggers = d.sell_triggers || [];
+    const decimals = DECIMALS[pair] || 5;
+
+    const hasPosition = pos != null;
+    const modeLabel = mode === 'oversold' ? '🔻超卖' : mode === 'trend' ? '📈顺势' : '—';
+
+    // Position info
+    let posHtml = '';
+    if (hasPosition) {
+      const pnlPips = price ? (price - pos.avg_cost) / (pair === 'USD.JPY' ? 0.01 : 0.0001) : 0;
+      const pnlColor = pnlPips >= 0 ? 'var(--green)' : 'var(--red)';
+      posHtml = `
+        <div class="pos-badge pos-yes">${pos.mode === 'oversold' ? '🔻' : '📈'} 持仓中</div>
+        <div class="pos-info">
+          <span>成本: ${fmt(pos.avg_cost, decimals)}</span>
+          <span>数量: ${pos.qty} lots</span>
+          <span style="color:${pnlColor};font-weight:600">${pnlPips >= 0 ? '+' : ''}${fmt(pnlPips, 1)} pips</span>
+        </div>`;
+    }
+
+    // Sell triggers
+    let sellHtml = '';
+    if (sellTriggers.length > 0) {
+      sellHtml = sellTriggers.map(s => `<span class="sell-tag">${s}</span>`).join('');
+    }
+
+    // Signal checks
+    const checkKeys = Object.keys(checks);
+    const signalsHtml = checkKeys.length > 0 ? checkKeys.map(k => {
+      const pass = checks[k];
+      return `<div class="signal${pass ? ' pass' : ''}">
+        <span class="name">${k}</span>
+        <span class="icon">${pass ? '✅' : '❌'}</span>
+      </div>`;
+    }).join('') : (price ? '<div style="font-size:12px;color:var(--muted)">— 等待信号</div>' : '<div style="font-size:12px;color:var(--muted)">数据不足</div>');
+
+    // Score bar
+    const total = checkKeys.length || 4;
+    const pct = total > 0 ? (score / total * 100) : 0;
+    const barColor = pct >= 100 ? 'var(--green)' : pct >= 50 ? 'var(--yellow)' : 'var(--muted)';
+
+    // Indicators
+    const indHtml = price ? `
+      <div class="indicators">
+        <span>RSI ${fmt(d.rsi, 1)}</span>
+        <span>ADX ${fmt(d.adx, 1)}</span>
+        <span>MACD ${fmt(d.macd_hist, 6)}</span>
+        <span>BB ${fmt(d.bb_lower, decimals)}-${fmt(d.bb_upper, decimals)}</span>
+      </div>` : '';
+
+    return `<div class="card">
+      <div class="card-header">
+        <span class="pair-name">${pair}</span>
+        <span class="price">${price ? fmt(price, decimals) : '--'}</span>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${PAIR_NAMES[pair]} · ${modeLabel}</div>
+      ${posHtml}
+      ${sellHtml}
+      <div class="signals">${signalsHtml}</div>
+      ${checkKeys.length > 0 ? `<div class="score-bar"><div class="score-fill" style="width:${pct}%;background:${barColor}"></div></div>` : ''}
+      ${indHtml}
+    </div>`;
+  }).join('');
+
+  // Trade history
+  renderTradeHistory(data);
+}
+
+function renderReport(data) {
+  const stats = data.session_stats;
+  if (!stats) {
+    document.getElementById('reportPanel').style.display = 'none';
+    return;
+  }
+  document.getElementById('reportPanel').style.display = 'block';
+
+  const totalTrades = stats.trades || 0;
+  const wins = stats.wins || 0;
+  const losses = stats.losses || 0;
+  const wr = (wins + losses) > 0 ? (wins / (wins + losses) * 100).toFixed(1) : '--';
+  const pnl = (stats.pnl || 0).toFixed(2);
+  const pnlColor = parseFloat(pnl) >= 0 ? 'var(--green)' : 'var(--red)';
+
+  document.getElementById('reportMetrics').innerHTML = `
+    <div class="bt-metric">
+      <div class="val">${totalTrades}</div>
+      <div class="lbl">交易次数</div>
+    </div>
+    <div class="bt-metric">
+      <div class="val">${wr}%</div>
+      <div class="lbl">胜率</div>
+    </div>
+    <div class="bt-metric">
+      <div class="val" style="color:${pnlColor}">$${pnl}</div>
+      <div class="lbl">当日盈亏</div>
+    </div>
+    <div class="bt-metric">
+      <div class="val">${wins}W / ${losses}L</div>
+      <div class="lbl">胜负比</div>
+    </div>
+  `;
+
+  const symbols = stats.symbols_traded || [];
+  document.getElementById('reportDetail').textContent =
+    symbols.length > 0
+      ? `交易品种: ${symbols.join(', ')} | 开盘: ${stats.session_start || '?'}`
+      : `今日无交易 | 开盘: ${stats.session_start || '?'}`;
+}
+
+function renderTradeHistory(data) {
+  const history = data.trade_history || [];
+  const tbody = document.getElementById('tradeBody');
+  if (history.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--muted);text-align:center">暂无交易记录</td></tr>';
+    return;
+  }
+  tbody.innerHTML = history.slice(-30).reverse().map(t => {
+    const dirClass = t.action === 'BUY' ? 'trade-buy' : (t.pnl >= 0 ? 'trade-sell trade-win' : 'trade-sell trade-loss');
+    const dirText = t.action === 'BUY' ? '买入' : '卖出';
+    const pnlText = t.action === 'SELL' && t.pnl != null ? '$' + t.pnl.toFixed(2) : '--';
+    const reasonTag = t.reason ? ' <span class="trade-reason">(' + (t.reason === 'stop_loss' ? '止损' : '信号') + ')</span>' : '';
+    return '<tr>' +
+      '<td style="color:var(--muted)">' + (t.time || '') + '</td>' +
+      '<td style="font-weight:600">' + (t.sym || '') + '</td>' +
+      '<td class="' + dirClass + '">' + dirText + reasonTag + '</td>' +
+      '<td>' + (t.qty || '') + '</td>' +
+      '<td>' + (t.price != null ? t.price.toFixed(5) : '--') + '</td>' +
+      '<td class="' + (t.action === 'SELL' && t.pnl != null ? (t.pnl >= 0 ? 'trade-win' : 'trade-loss') : '') + '" style="font-weight:600">' + pnlText + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+// Auto-refresh
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>
