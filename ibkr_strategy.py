@@ -332,6 +332,7 @@ async def run():
     prev_entry_times = {}
     prev_entry_modes = {}
     prev_last_sells = {}
+    prev_last_buys = {}
     try:
         with open(f"{DASHBOARD_DIR}/data.json") as f:
             prev = json.load(f)
@@ -343,6 +344,8 @@ async def run():
         # Read last sell times
         for sym, ts in (prev.get("last_sells") or {}).items():
             prev_last_sells[sym] = ts
+        for sym, ts in (prev.get("last_buys") or {}).items():
+            prev_last_buys[sym] = ts
         # Read session stats (carry over within same trading day)
         prev_stats = prev.get("session_stats", {})
         if prev_stats.get("date") != now.strftime("%Y-%m-%d"):
@@ -393,6 +396,7 @@ async def run():
             dashboard["symbols_time"] = existing.get("symbols_time")  # 保留盘中快照时间
             dashboard["session_stats"] = existing.get("session_stats", prev_stats)
             dashboard["trade_history"] = existing.get("trade_history", [])
+            dashboard["last_buys"] = existing.get("last_buys", {})
             # 保留盘中持仓（不从 IB 覆盖）
             if existing.get("market_status") in ("open",):
                 dashboard["positions"] = existing.get("positions", dashboard["positions"])
@@ -462,12 +466,22 @@ async def run():
                     checks, all_ok = check_buy(rsi, price, sma, upper, mid, lower, adx, ml, sl, hist, ph, avg_vol, cur_vol, MACD_HIST_THRESHOLD)
                     score = sum(1 for v in checks.values() if v)
                     print(f"${price:.2f} RSI={rsi:.1f} 🔻超卖 {score}/6", end="")
+                    # ── 买入冷却 ──
+                    if all_ok and sym in prev_last_buys:
+                        try:
+                            last_buy = datetime.fromisoformat(prev_last_buys[sym])
+                            if (now - last_buy).total_seconds() < COOLDOWN_MINUTES * 60:
+                                print(f"\n  ⏳ 买入冷却 {int(COOLDOWN_MINUTES - (now-last_buy).total_seconds()/60)}min")
+                                all_ok = False
+                        except:
+                            pass
                     if all_ok:
                         if nlv and nlv > 0:
                             qty = int((nlv * POSITION_ALLOC * LEVERAGE) / price)
                             print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
                             filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty)
                             if filled:
+                                prev_last_buys[sym] = now.isoformat()
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
                                 session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "qty": qty, "time": now.strftime("%H:%M:%S")})
                         else:
@@ -479,12 +493,22 @@ async def run():
                     checks, all_ok = check_buy_trend(rsi, price, sma, adx, ml, sl, hist, ph, avg_vol, cur_vol, MACD_HIST_THRESHOLD)
                     score = sum(1 for v in checks.values() if v)
                     print(f"${price:.2f} RSI={rsi:.1f} 📈顺势 {score}/4", end="")
+                    # ── 买入冷却 ──
+                    if all_ok and sym in prev_last_buys:
+                        try:
+                            last_buy = datetime.fromisoformat(prev_last_buys[sym])
+                            if (now - last_buy).total_seconds() < COOLDOWN_MINUTES * 60:
+                                print(f"\n  ⏳ 买入冷却 {int(COOLDOWN_MINUTES - (now-last_buy).total_seconds()/60)}min")
+                                all_ok = False
+                        except:
+                            pass
                     if all_ok:
                         if nlv and nlv > 0:
                             qty = int((nlv * POSITION_ALLOC * LEVERAGE) / price)
                             print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
                             filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty)
                             if filled:
+                                prev_last_buys[sym] = now.isoformat()
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
                                 session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "qty": qty, "time": now.strftime("%H:%M:%S")})
                         else:
@@ -583,6 +607,7 @@ async def run():
             if positions.get(sym) is None and prev_last_sells.get(sym):
                 last_sells_out[sym] = prev_last_sells[sym]
         dashboard["last_sells"] = last_sells_out
+        dashboard["last_buys"] = prev_last_buys
         dashboard["symbols_time"] = now.strftime("%H:%M:%S")  # 记录盘中快照时间
 
     with open(f"{DASHBOARD_DIR}/data.json", "w") as f:
