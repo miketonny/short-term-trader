@@ -41,8 +41,9 @@ REENTRY_COOLDOWN = 15
 # IBKR
 ORDER_TIMEOUT = 15
 MAX_RETRIES = 3
-BAR_SIZE = "15 mins"
-DURATION = "3 D"
+INTERVAL = "15min"
+
+TWELVE_DATA_KEY = "a3377a4097ee4b2fba8a646a6dd898ab"
 
 # 输出
 DASHBOARD_DIR = os.path.expanduser("~/forex_dashboard")
@@ -106,24 +107,32 @@ from strategy_core import (calc_rsi, calc_sma, calc_bbands, calc_adx, calc_macd,
 from ib_insync import IB, Forex, MarketOrder
 
 # ════════════════ 数据获取 ════════════════
-async def fetch_forex_data(ib, ibkr_pair):
-    """从 IBKR 拉 OHLCV"""
-    contract = Forex(ibkr_pair)
-    bars = await ib.reqHistoricalDataAsync(
-        contract,
-        endDateTime="",
-        durationStr=DURATION,
-        barSizeSetting=BAR_SIZE,
-        whatToShow="MIDPOINT",
-        useRTH=False,
-        formatDate=1
-    )
-    if not bars or len(bars) < 30:
+async def fetch_forex_data(td_pair):
+    """从 Twelve Data 拉 OHLCV"""
+    import urllib.request
+
+    url = f"https://api.twelvedata.com/time_series?symbol={td_pair}&interval={INTERVAL}&outputsize={CANDLES}&apikey={TWELVE_DATA_KEY}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+    except Exception as e:
+        print(f"API error: {e}")
         return None
 
-    closes = np.array([b.close for b in bars])
-    highs = np.array([b.high for b in bars])
-    lows = np.array([b.low for b in bars])
+    if data.get("status") != "ok" or "values" not in data:
+        return None
+
+    values = data["values"]
+    if len(values) < 30:
+        return None
+
+    # Twelve Data returns newest first, reverse to chronological
+    values.reverse()
+    closes = np.array([float(v["close"]) for v in values])
+    highs = np.array([float(v["high"]) for v in values])
+    lows = np.array([float(v["low"]) for v in values])
 
     rsi = calc_rsi(closes)
     sma = calc_sma(closes)
@@ -140,7 +149,22 @@ async def fetch_forex_data(ib, ibkr_pair):
         "macd_hist": hist, "macd_prev_hist": ph
     }
 
-# ════════════════ 下单 ════════════════
+# ════════════════ 市场时段 ════════════════
+def is_forex_market_open():
+    """Forex 24/5: 周日 5pm ET → 周五 5pm ET. 0=Mon, 6=Sun"""
+    from datetime import timezone
+    et = timezone(timedelta(hours=-4))  # EDT
+    now_et = datetime.now(et)
+    weekday = now_et.weekday()
+    hour = now_et.hour + now_et.minute / 60
+
+    if weekday == 4 and hour >= 17:  # Friday after 5pm ET
+        return False
+    if weekday == 5:  # Saturday
+        return False
+    if weekday == 6 and hour < 17:  # Sunday before 5pm ET
+        return False
+    return True
 async def place_and_confirm(ib, ibkr_pair, action, quantity):
     contract = Forex(ibkr_pair)
     order = MarketOrder(action, quantity)
@@ -189,6 +213,30 @@ async def run():
                 nlv = float(v.value)
         print(f"  账户 NLV=${nlv:,.2f}" if nlv else "  无法获取 NLV")
 
+        # ── 市场时段 ──
+        if not is_forex_market_open():
+            print("  非交易时段 (周末休市)")
+            dashboard = {
+                "time": now.strftime("%H:%M:%S"),
+                "date": now.strftime("%Y-%m-%d"),
+                "status": "closed", "status_text": "🔴 休市",
+                "nlv": nlv, "pairs": {}, "positions": {},
+                "session_stats": {}, "trade_history": []
+            }
+            # preserve existing data if possible
+            try:
+                with open(f"{DASHBOARD_DIR}/data.json") as f:
+                    existing = json.load(f)
+                dashboard["trade_history"] = existing.get("trade_history", [])
+                dashboard["session_stats"] = existing.get("session_stats", {})
+                dashboard["pairs"] = existing.get("pairs", {})
+                dashboard["positions"] = existing.get("positions", {})
+            except:
+                pass
+            with open(f"{DASHBOARD_DIR}/data.json", "w") as f:
+                json.dump(dashboard, f)
+            return
+
         # ── 日历防御 ──
         paused, reason = should_pause_for_news()
         if paused:
@@ -209,6 +257,7 @@ async def run():
         prev_entry_modes = {}
         prev_entry_trails = {}
         prev_last_sells = {}
+        prev_last_buys = {}
         trade_history = []
         session_stats = {
             "date": now.strftime("%Y-%m-%d"), "trades": 0,
@@ -227,6 +276,8 @@ async def run():
                     prev_entry_trails[sym] = p["trailing_stop"]
             for sym, ts in (prev.get("last_sells") or {}).items():
                 prev_last_sells[sym] = ts
+            for sym, ts in (prev.get("last_buys") or {}).items():
+                prev_last_buys[sym] = ts
             trade_history = prev.get("trade_history", [])
             ps = prev.get("session_stats", {})
             if ps.get("date") == now.strftime("%Y-%m-%d"):
@@ -249,6 +300,14 @@ async def run():
                         entry["trailing_stop"] = prev_entry_trails[display_pair]
                     positions[display_pair] = entry
 
+        # ── 如果 IB 没显示仓位但上轮有记录，恢复上轮仓位 ──
+        for pair in PAIRS:
+            if positions[pair] is None and pair in prev_entry_times:
+                # Restore from previous data.json
+                prev_pos = (prev.get("positions") or {}).get(pair)
+                if prev_pos:
+                    positions[pair] = prev_pos
+
         session_trades = []
         pair_data = {}
 
@@ -256,14 +315,23 @@ async def run():
         for display_pair, ibkr_pair in PAIRS.items():
             print(f"  ── {display_pair} ── ", end="")
             try:
-                d = await fetch_forex_data(ib, ibkr_pair)
+                d = await fetch_forex_data(display_pair.replace(".", "/"))
                 if d is None:
                     print("数据不足")
                     pair_data[display_pair] = {"price": None}
+                    # Preserve position from prev data if exists
+                    if positions[display_pair] is None and display_pair in prev_entry_times:
+                        prev_p = (prev.get("positions") or {}).get(display_pair)
+                        if prev_p:
+                            positions[display_pair] = prev_p
                     continue
             except Exception as e:
                 print(f"获取失败: {e}")
                 pair_data[display_pair] = {"price": None}
+                if positions[display_pair] is None and display_pair in prev_entry_times:
+                    prev_p = (prev.get("positions") or {}).get(display_pair)
+                    if prev_p:
+                        positions[display_pair] = prev_p
                 continue
 
             price = d["price"]
@@ -313,11 +381,20 @@ async def run():
                     pair_data[display_pair]["all_ok"] = all_ok
 
                     print(f"{price:.5f} RSI={rsi:.1f} 🔻超卖 {score}/5", end="")
+                    if display_pair in prev_last_buys:
+                        try:
+                            last_buy = datetime.fromisoformat(prev_last_buys[display_pair])
+                            if (now - last_buy).total_seconds() < COOLDOWN_MINUTES * 60:
+                                print(f"\n  ⏳ 买入冷却 {int(COOLDOWN_MINUTES - (now-last_buy).total_seconds()/60)}min")
+                                all_ok = False
+                        except:
+                            pass
                     if all_ok:
                         qty = calc_position_size(nlv, display_pair)
                         print(f"\n  🟢 BUY [{mode}] {display_pair} = {qty} units")
                         filled, fill_price = await place_and_confirm(ib, ibkr_pair, "BUY", qty)
                         if filled:
+                            prev_last_buys[display_pair] = now.isoformat()
                             pip_size = PIP_SIZES.get(display_pair, 0.0001)
                             trail = fill_price - STOP_PIPS * pip_size
                             positions[display_pair] = {"qty": qty, "avg_cost": fill_price,
@@ -344,11 +421,20 @@ async def run():
                     pair_data[display_pair]["all_ok"] = all_ok
 
                     print(f"{price:.5f} RSI={rsi:.1f} 📈顺势 {score}/3", end="")
+                    if display_pair in prev_last_buys:
+                        try:
+                            last_buy = datetime.fromisoformat(prev_last_buys[display_pair])
+                            if (now - last_buy).total_seconds() < COOLDOWN_MINUTES * 60:
+                                print(f"\n  ⏳ 买入冷却 {int(COOLDOWN_MINUTES - (now-last_buy).total_seconds()/60)}min")
+                                all_ok = False
+                        except:
+                            pass
                     if all_ok:
                         qty = calc_position_size(nlv, display_pair)
                         print(f"\n  🟢 BUY [{mode}] {display_pair} = {qty} units")
                         filled, fill_price = await place_and_confirm(ib, ibkr_pair, "BUY", qty)
                         if filled:
+                            prev_last_buys[display_pair] = now.isoformat()
                             pip_size = PIP_SIZES.get(display_pair, 0.0001)
                             trail = fill_price - STOP_PIPS * pip_size
                             positions[display_pair] = {"qty": qty, "avg_cost": fill_price,
@@ -480,7 +566,8 @@ async def run():
             "positions": {pair: pos for pair, pos in positions.items()},
             "session_stats": session_stats,
             "trade_history": trade_history + session_trades,
-            "last_sells": last_sells_out
+            "last_sells": last_sells_out,
+            "last_buys": prev_last_buys
         }
 
         with open(f"{DASHBOARD_DIR}/data.json", "w") as f:
