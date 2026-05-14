@@ -34,6 +34,7 @@ MACD_HIST_THRESHOLD = 0.00005
 # 风控
 RISK_PCT = 0.01
 STOP_PIPS = 30
+TRAILING_PIPS = 20      # 移动止损：涨了锁利润
 COOLDOWN_MINUTES = 15
 REENTRY_COOLDOWN = 15
 
@@ -79,8 +80,10 @@ def calc_position_size(nlv, pair):
     risk_amount = nlv * RISK_PCT
     pip_value = PIP_VALUES.get(pair, 10.0)
     lots = risk_amount / (STOP_PIPS * pip_value)
-    lots = max(0.01, round(lots * 100) / 100)
-    return lots
+    # Convert to integer units (1 lot = 100,000 units)
+    units = int(round(lots * 100000, -3))  # round to nearest 1000
+    units = max(20000, min(units, 500000))  # 0.2~5 lots, cap for safety
+    return units
 
 # ════════════════ 失败计数 ════════════════
 def get_fail_count():
@@ -121,7 +124,6 @@ async def fetch_forex_data(ib, ibkr_pair):
     closes = np.array([b.close for b in bars])
     highs = np.array([b.high for b in bars])
     lows = np.array([b.low for b in bars])
-    volumes = np.array([b.volume for b in bars])
 
     rsi = calc_rsi(closes)
     sma = calc_sma(closes)
@@ -130,15 +132,12 @@ async def fetch_forex_data(ib, ibkr_pair):
     ml, sl, hist, ph = calc_macd(closes)
 
     price = closes[-1]
-    avg_vol = float(np.mean(volumes[:-1])) if len(volumes) > 1 else volumes[-1]
-    cur_vol = float(volumes[-1])
 
     return {
         "price": price, "rsi": rsi, "sma": sma,
         "bb_upper": upper, "bb_middle": middle, "bb_lower": lower,
         "adx": adx, "macd_ml": ml, "macd_sl": sl,
-        "macd_hist": hist, "macd_prev_hist": ph,
-        "avg_vol": avg_vol, "cur_vol": cur_vol
+        "macd_hist": hist, "macd_prev_hist": ph
     }
 
 # ════════════════ 下单 ════════════════
@@ -208,6 +207,7 @@ async def run():
         # ── 读上轮数据 ──
         prev_entry_times = {}
         prev_entry_modes = {}
+        prev_entry_trails = {}
         prev_last_sells = {}
         trade_history = []
         session_stats = {
@@ -223,6 +223,8 @@ async def run():
                     prev_entry_times[sym] = p["entry_time"]
                 if p and p.get("mode"):
                     prev_entry_modes[sym] = p["mode"]
+                if p and p.get("trailing_stop"):
+                    prev_entry_trails[sym] = p["trailing_stop"]
             for sym, ts in (prev.get("last_sells") or {}).items():
                 prev_last_sells[sym] = ts
             trade_history = prev.get("trade_history", [])
@@ -243,6 +245,8 @@ async def run():
                         entry["entry_time"] = prev_entry_times[display_pair]
                     if display_pair in prev_entry_modes:
                         entry["mode"] = prev_entry_modes[display_pair]
+                    if display_pair in prev_entry_trails:
+                        entry["trailing_stop"] = prev_entry_trails[display_pair]
                     positions[display_pair] = entry
 
         session_trades = []
@@ -265,10 +269,9 @@ async def run():
             price = d["price"]
             rsi = d["rsi"]
             sma = d["sma"]
-            upper, middle, lower = d["bb_upper"], d["bb_middle"], d["bb_lower"]
+            upper, lower = d["bb_upper"], d["bb_lower"]
             adx = d["adx"]
             ml, sl, hist, ph = d["macd_ml"], d["macd_sl"], d["macd_hist"], d["macd_prev_hist"]
-            avg_vol, cur_vol = d["avg_vol"], d["cur_vol"]
 
             pair_data[display_pair] = {
                 "price": float(price) if price else None,
@@ -295,63 +298,65 @@ async def run():
                 pair_data[display_pair]["mode"] = mode
 
                 if mode == "oversold":
-                    all_ok_val = check_buy_oversold(
-                        rsi, price, sma, upper, middle, lower, adx,
-                        ml, sl, hist, ph, avg_vol, cur_vol,
-                        RSI_OVERSOLD, ADX_TRENDING, MACD_HIST_THRESHOLD
-                    )
+                    # 5个条件: RSI超卖 + 触及下轨 + 趋势向上 + 趋势明确 + MACD转正
                     checks = {
                         "RSI超卖": bool(rsi < RSI_OVERSOLD),
                         "触及下轨": bool(price <= lower * 1.02),
                         "趋势向上": bool(price > sma),
                         "趋势明确": bool(adx > ADX_TRENDING),
                         "MACD转正": bool(hist > MACD_HIST_THRESHOLD and ph < hist),
-                        "量能确认": bool(cur_vol > avg_vol)
                     }
                     score = sum(1 for v in checks.values() if v)
                     pair_data[display_pair]["checks"] = checks
                     pair_data[display_pair]["score"] = score
-                    pair_data[display_pair]["all_ok"] = all_ok_val
+                    all_ok = all(checks.values())
+                    pair_data[display_pair]["all_ok"] = all_ok
 
-                    print(f"{price:.5f} RSI={rsi:.1f} 🔻超卖 {score}/6", end="")
-                    if all_ok_val:
-                        lots = calc_position_size(nlv, display_pair)
-                        print(f"\n  🟢 BUY [{mode}] {display_pair} = {lots} lots")
-                        filled, fill_price = await place_and_confirm(ib, ibkr_pair, "BUY", lots)
+                    print(f"{price:.5f} RSI={rsi:.1f} 🔻超卖 {score}/5", end="")
+                    if all_ok:
+                        qty = calc_position_size(nlv, display_pair)
+                        print(f"\n  🟢 BUY [{mode}] {display_pair} = {qty} units")
+                        filled, fill_price = await place_and_confirm(ib, ibkr_pair, "BUY", qty)
                         if filled:
-                            positions[display_pair] = {"qty": lots, "avg_cost": fill_price,
-                                                       "entry_time": now.isoformat(), "mode": mode}
+                            pip_size = PIP_SIZES.get(display_pair, 0.0001)
+                            trail = fill_price - STOP_PIPS * pip_size
+                            positions[display_pair] = {"qty": qty, "avg_cost": fill_price,
+                                                       "entry_time": now.isoformat(), "mode": mode,
+                                                       "trailing_stop": trail}
                             session_trades.append({
                                 "sym": display_pair, "action": "BUY", "price": fill_price,
-                                "qty": lots, "time": now.strftime("%H:%M:%S")
+                                "qty": qty, "time": now.strftime("%H:%M:%S")
                             })
                     else:
                         print("")
 
                 elif mode == "trend":
+                    # 3个条件: RSI>50 + 趋势向上 + MACD金叉
                     checks = {
                         "RSI>50": bool(rsi > RSI_TREND_ENTRY),
                         "趋势向上": bool(price > sma),
                         "MACD金叉": bool(ml > sl and hist > MACD_HIST_THRESHOLD),
-                        "量能确认": bool(cur_vol > avg_vol)
                     }
                     score = sum(1 for v in checks.values() if v)
-                    all_ok = all(v for v in checks.values())
+                    all_ok = all(checks.values())
                     pair_data[display_pair]["checks"] = checks
                     pair_data[display_pair]["score"] = score
                     pair_data[display_pair]["all_ok"] = all_ok
 
-                    print(f"{price:.5f} RSI={rsi:.1f} 📈顺势 {score}/4", end="")
+                    print(f"{price:.5f} RSI={rsi:.1f} 📈顺势 {score}/3", end="")
                     if all_ok:
-                        lots = calc_position_size(nlv, display_pair)
-                        print(f"\n  🟢 BUY [{mode}] {display_pair} = {lots} lots")
-                        filled, fill_price = await place_and_confirm(ib, ibkr_pair, "BUY", lots)
+                        qty = calc_position_size(nlv, display_pair)
+                        print(f"\n  🟢 BUY [{mode}] {display_pair} = {qty} units")
+                        filled, fill_price = await place_and_confirm(ib, ibkr_pair, "BUY", qty)
                         if filled:
-                            positions[display_pair] = {"qty": lots, "avg_cost": fill_price,
-                                                       "entry_time": now.isoformat(), "mode": mode}
+                            pip_size = PIP_SIZES.get(display_pair, 0.0001)
+                            trail = fill_price - STOP_PIPS * pip_size
+                            positions[display_pair] = {"qty": qty, "avg_cost": fill_price,
+                                                       "entry_time": now.isoformat(), "mode": mode,
+                                                       "trailing_stop": trail}
                             session_trades.append({
                                 "sym": display_pair, "action": "BUY", "price": fill_price,
-                                "qty": lots, "time": now.strftime("%H:%M:%S")
+                                "qty": qty, "time": now.strftime("%H:%M:%S")
                             })
                     else:
                         print("")
@@ -365,7 +370,16 @@ async def run():
                 entry_time_str = pos.get("entry_time")
 
                 pip_size = PIP_SIZES.get(display_pair, 0.0001)
-                stop_price = entry_price - STOP_PIPS * pip_size
+                original_stop = entry_price - STOP_PIPS * pip_size
+
+                # ── 移动止损：涨了就上移 ──
+                trailing_stop = pos.get("trailing_stop", original_stop)
+                new_trail = price - TRAILING_PIPS * pip_size
+                if new_trail > trailing_stop:
+                    trailing_stop = new_trail
+                    pos["trailing_stop"] = trailing_stop  # persist
+
+                effective_stop = max(original_stop, trailing_stop)
 
                 if entry_mode == "trend":
                     sell_triggered = check_sell_trend(rsi, price, sma, ml, sl, hist, RSI_TREND_OVERBOUGHT)
@@ -386,16 +400,18 @@ async def run():
 
                 print(f"{price:.5f} RSI={rsi:.1f} [{entry_mode}]" + (" ⚡卖出!" if sell_names else ""))
 
-                # ── 硬止损 ──
-                if price <= stop_price:
-                    print(f"  🛑 STOP LOSS: {price:.5f} ≤ {stop_price:.5f} ({STOP_PIPS} pips)")
+                # ── 硬止损 / 移动止损 ──
+                if price <= effective_stop:
+                    reason = "trailing_stop" if trailing_stop > original_stop else "stop_loss"
+                    stop_label = "移动止损" if trailing_stop > original_stop else "硬止损"
+                    print(f"  🛑 {stop_label}: {price:.5f} ≤ {effective_stop:.5f} (原始止损 {original_stop:.5f})")
                     filled, _ = await place_and_confirm(ib, ibkr_pair, "SELL", pos["qty"])
                     if filled:
                         prev_last_sells[display_pair] = now.isoformat()
                         pnl_pips = (price - pos["avg_cost"]) / pip_size
-                        pnl_usd = pnl_pips * PIP_VALUES.get(display_pair, 10.0) * pos["qty"]
+                        pnl_usd = pnl_pips * PIP_VALUES.get(display_pair, 10.0) * (pos["qty"] / 100000)
                         session_trades.append({
-                            "sym": display_pair, "action": "SELL", "reason": "stop_loss",
+                            "sym": display_pair, "action": "SELL", "reason": reason,
                             "price": round(price, 5), "qty": pos["qty"],
                             "pnl": round(pnl_usd, 2), "time": now.strftime("%H:%M:%S")
                         })
@@ -418,7 +434,7 @@ async def run():
                         if filled:
                             prev_last_sells[display_pair] = now.isoformat()
                             pnl_pips = (price - pos["avg_cost"]) / pip_size
-                            pnl_usd = pnl_pips * PIP_VALUES.get(display_pair, 10.0) * pos["qty"]
+                            pnl_usd = pnl_pips * PIP_VALUES.get(display_pair, 10.0) * (pos["qty"] / 100000)
                             session_trades.append({
                                 "sym": display_pair, "action": "SELL", "reason": "technical",
                                 "price": round(price, 5), "qty": pos["qty"],
@@ -427,9 +443,13 @@ async def run():
                             positions[display_pair] = None
                 else:
                     pnl_pips = (price - entry_price) / pip_size
-                    pnl_usd = pnl_pips * PIP_VALUES.get(display_pair, 10.0) * pos["qty"]
+                    pnl_usd = pnl_pips * PIP_VALUES.get(display_pair, 10.0) * (pos["qty"] / 100000)
                     sign = "+" if pnl_usd >= 0 else "-"
-                    print(f"  持有中 ({sign}${abs(pnl_usd):.2f}, 止损 {STOP_PIPS}pips)")
+                    if trailing_stop > original_stop:
+                        trail_pips = (price - trailing_stop) / pip_size
+                        print(f"  持有中 ({sign}${abs(pnl_usd):.2f}, 移动止损 ${trailing_stop:.5f} / {trail_pips:.0f}pips)")
+                    else:
+                        print(f"  持有中 ({sign}${abs(pnl_usd):.2f}, 止损 {STOP_PIPS}pips)")
 
         # ── 更新 stats ──
         for t in session_trades:

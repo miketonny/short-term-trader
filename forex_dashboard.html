@@ -211,8 +211,8 @@ function render(data) {
         <div class="pos-badge pos-yes">${pos.mode === 'oversold' ? '🔻' : '📈'} 持仓中</div>
         <div class="pos-info">
           <span>成本: ${fmt(pos.avg_cost, decimals)}</span>
-          <span>数量: ${pos.qty} lots</span>
-          <span style="color:${pnlColor};font-weight:600">${pnlPips >= 0 ? '+' : ''}${fmt(pnlPips, 1)} pips</span>
+      <span>数量: ${pos.qty} units</span>
+      <span style="color:${pnlColor};font-weight:600">${pnlPips >= 0 ? '+' : ''}${fmt(pnlPips, 1)} pips</span>
         </div>`;
     }
 
