@@ -6,10 +6,17 @@ V1: 多品种并行 ETF 短线策略 + 看板数据输出
 Twelve Data OHLCV → numpy 本地计算 6 指标 → ib_insync 下单 → 订单确认。
 每轮输出 ~/ibkr_dashboard/data.json
 """
-import requests, asyncio, json, os, time
+import requests, asyncio, json, os, sys, time
 import numpy as np
 from datetime import datetime, timezone, timedelta
 from ib_insync import IB, Stock, MarketOrder
+
+# ── 共用模块 ──
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from circuit_breaker import CircuitBreaker
+from data_cache import DataCache, get_cache
+from rate_limiter import get_twelve_data_limiter, random_ua
+from notifier import notify_trade, notify_error, notify_stop_loss
 
 # ============ 配置 ============
 TWELVE_DATA_KEY = "a3377a4097ee4b2fba8a646a6dd898ab"
@@ -31,9 +38,15 @@ STOP_LOSS_PCT = 0.02
 COOLDOWN_MINUTES = 15
 
 DASHBOARD_DIR = os.path.expanduser("~/ibkr_dashboard")
-FAIL_COUNT_FILE = os.path.expanduser("~/ibkr_dashboard/fail_count.json")
-MAX_RETRIES = 3
 os.makedirs(DASHBOARD_DIR, exist_ok=True)
+
+# ── 熔断器（替换 fail_count.json）──
+_circuit = CircuitBreaker(
+    "ibkr_etf",
+    threshold=3,
+    cooldown=600,
+    persist_path=os.path.join(DASHBOARD_DIR, "circuit_state.json"),
+)
 
 # ── 读取策略配置（Dashboard 可编辑）──
 CONFIG_FILE = os.path.expanduser("~/ibkr_dashboard/strategy_config.json")
@@ -61,6 +74,11 @@ COOLDOWN_MINUTES = _cfg.get("cooldown_minutes", COOLDOWN_MINUTES)
 REENTRY_COOLDOWN_MINUTES = _cfg.get("reentry_cooldown_minutes", 15)
 MACD_HIST_THRESHOLD = _cfg.get("macd_hist_threshold", 0.05)
 MAX_RETRIES = _cfg.get("max_retries", MAX_RETRIES)
+_circuit.threshold = MAX_RETRIES  # 从配置同步
+
+# ============ 数据缓存 & 限流 ============
+_cache = get_cache()
+_limiter = get_twelve_data_limiter()
 
 # ============ 市场时间 ============
 def get_market_info():
@@ -110,10 +128,17 @@ def fetch_news():
 
 # ============ Twelve Data API ============
 def fetch_candles(symbol):
+    """获取 K线 — 缓存命中直接返回，否则限流+请求"""
+    cache_key = f"{symbol}:{INTERVAL}:{CANDLES}"
+    cached = _cache.get(cache_key)
+    if cached is not None:
+        return cached, cached["close"][-1]
+
+    _limiter.wait()
     resp = requests.get("https://api.twelvedata.com/time_series", params={
         "symbol": symbol, "interval": INTERVAL, "outputsize": CANDLES,
         "apikey": TWELVE_DATA_KEY
-    }, timeout=10)
+    }, timeout=10, headers={"User-Agent": random_ua()})
     data = resp.json()
     if "values" not in data:
         return None, None
@@ -121,7 +146,11 @@ def fetch_candles(symbol):
     highs  = np.array([float(v["high"]) for v in reversed(data["values"])])
     lows   = np.array([float(v["low"]) for v in reversed(data["values"])])
     volumes = np.array([float(v["volume"]) for v in reversed(data["values"])])
-    return {"close": closes, "high": highs, "low": lows, "volume": volumes}, closes[-1]
+    result = {"close": closes, "high": highs, "low": lows, "volume": volumes}
+    # 缓存 (TTL 按周期)
+    ttl = DataCache.ttl_for_interval(INTERVAL)
+    _cache.put(cache_key, result, ttl=ttl)
+    return result, closes[-1]
 
 def get_price(symbol):
     resp = requests.get("https://api.twelvedata.com/price", params={
@@ -244,18 +273,6 @@ def determine_mode(rsi, price, sma):
         return "trend"
     return None
 
-# ============ 失败计数 ============
-def get_fail_count():
-    try:
-        with open(FAIL_COUNT_FILE) as f:
-            return json.load(f).get("count", 0)
-    except:
-        return 0
-
-def set_fail_count(n):
-    with open(FAIL_COUNT_FILE, "w") as f:
-        json.dump({"count": n, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, f)
-
 # ============ 交易执行 ============
 async def place_and_confirm(ib, sym, action, quantity):
     """
@@ -286,15 +303,15 @@ async def place_and_confirm(ib, sym, action, quantity):
 # ============ 主逻辑 ============
 async def run():
     now = datetime.now()
-    fails = get_fail_count()
 
-    # ── 失败熔断 ──
-    if fails >= MAX_RETRIES:
-        print(f"⛔ 已连续失败 {fails}/{MAX_RETRIES} 次，停止自动重试。")
+    # ── 熔断检查 ──
+    if not _circuit.available():
+        remaining = int(_circuit.remaining_cooldown)
+        print(f"⛔ 熔断中（剩余 {remaining}s），跳过本轮。最后错误: {_circuit.last_error}")
         dashboard = {
             "time": now.strftime("%H:%M:%S"), "date": now.strftime("%Y-%m-%d"),
-            "market_status": "blocked", "market_text": "⛔ 已暂停",
-            "market_et": f"连续{fails}次失败", "news": [], "symbols": {},
+            "market_status": "blocked", "market_text": f"⛔ 已熔断 ({remaining}s剩余)",
+            "market_et": _circuit.last_error or "", "news": [], "symbols": {},
             "positions": {}, "account": None
         }
         with open(f"{DASHBOARD_DIR}/data.json", "w") as f:
@@ -305,15 +322,13 @@ async def run():
     ib = IB()
     try:
         await ib.connectAsync(IB_HOST, IB_PORT, clientId=CLIENT_ID, timeout=10)
-        if fails > 0:
-            set_fail_count(0)
-            print(f"✅ 连接恢复 (之前失败 {fails} 次，已重置)")
+        _circuit.success()
     except Exception as e:
-        new_fails = fails + 1
-        set_fail_count(new_fails)
-        print(f"❌ IB 连接失败 ({new_fails}/{MAX_RETRIES}): {e}")
-        if new_fails >= MAX_RETRIES:
-            print(f"⛔ 达到最大重试次数，暂停自动交易。")
+        _circuit.failure(str(e))
+        print(f"❌ IB 连接失败 ({_circuit.failures}/{_circuit.threshold}): {e}")
+        if _circuit.is_blocked:
+            notify_error("ibkr_etf_gateway", str(e))
+            print("⛔ 熔断触发，暂停自动交易。")
         return
 
     # ── 获取账户净值和当前持仓 ──
@@ -484,6 +499,7 @@ async def run():
                                 prev_last_buys[sym] = now.isoformat()
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
                                 session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "qty": qty, "time": now.strftime("%H:%M:%S")})
+                                notify_trade(sym, "BUY", fill_price, qty)
                         else:
                             print("  (NLV不可用)")
                     else:
@@ -511,6 +527,7 @@ async def run():
                                 prev_last_buys[sym] = now.isoformat()
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
                                 session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "qty": qty, "time": now.strftime("%H:%M:%S")})
+                                notify_trade(sym, "BUY", fill_price, qty)
                         else:
                             print("  (NLV不可用)")
                     else:
@@ -540,6 +557,7 @@ async def run():
                         prev_last_sells[sym] = now.isoformat()
                         pnl = (float(trade.fillPrice) - pos["avg_cost"]) * pos["qty"] if hasattr(trade, 'fillPrice') else 0
                         session_trades.append({"sym": sym, "action": "SELL", "reason": "stop_loss", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "time": now.strftime("%H:%M:%S")})
+                        notify_stop_loss(sym, price, stop_price, "hard")
                         positions[sym] = None
                         sell_triggers = ["硬止损"]
                 else:
@@ -567,6 +585,7 @@ async def run():
                                 # Use current price as approximate fill for P&L calc
                                 pnl = (price - pos["avg_cost"]) * pos["qty"]
                                 session_trades.append({"sym": sym, "action": "SELL", "reason": "technical", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "time": now.strftime("%H:%M:%S")})
+                                notify_trade(sym, "SELL", price, pos["qty"], reason=",".join(sell_triggers))
                                 positions[sym] = None
                     elif not in_cooldown:
                         print(f"  持有中 (成本 ${entry_price:.2f}, 止损 ${stop_price:.2f})")

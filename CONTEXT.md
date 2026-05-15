@@ -54,9 +54,12 @@ to Cooldown. If the current price drops to or below entry × 0.97, the Position
 is immediately sold.
 
 ### Circuit Breaker
-After 3 consecutive IBKR connection failures, the strategy pauses all automated
-trading. Manual intervention (deleting the failure counter file) is required to
-resume.
+A state-machine pattern (CLOSED → OPEN → HALF_OPEN) implemented in
+`circuit_breaker.py`. After 3 consecutive IBKR connection failures, the
+strategy enters OPEN state (10-minute cooldown). After cooldown, a single
+HALF_OPEN probe is allowed — success restores CLOSED, failure returns to OPEN.
+State persists to `circuit_state.json`, surviving crashes and reboots.
+Replaces the old `fail_count.json` single-file counter.
 
 ### Allocation
 Each ETF receives 10% of the account's Net Liquidation Value (USD). Fractional
@@ -79,38 +82,70 @@ The minimum absolute value of the MACD histogram for a valid buy Signal.
 Set to 0.10 for 15-minute candles. Filters out weak crossovers where the
 histogram barely crosses zero.
 
+### Data Cache
+A TTL + LRU cache layer in `data_cache.py` that avoids redundant Twelve Data
+API calls. Keys are `symbol:interval:outputsize`. TTL varies by interval
+(e.g., 60s for 5min bars, 180s for 15min). Shared between ETF and forex
+strategies.
+
+### Rate Limiter
+A request gate in `rate_limiter.py` that enforces a minimum interval (1.2s)
+plus random jitter (0.3–0.8s) between Twelve Data API calls. Rotates
+User-Agent headers to avoid rate limiting.
+
+### Notifier
+A webhook notification channel in `notifier.py`. Set `NOTIFY_WEBHOOK_URL`
+environment variable to receive JSON events on trades, stop losses, and
+errors. Silent (no-op) when not configured.
+
+### Equity Curve
+A time-series of cumulative P&L produced by `backtest.py`, downsampled to
+~200 data points for the Dashboard mini-chart canvas. Shows the strategy's
+profit trajectory over the backtest period.
+
+### Trade List
+Per-trade details (symbol, direction, mode, price, reason, P&L) output by
+`backtest.py`. Displayed as a sortable table in the Dashboard backtest panel.
+
 ## Architecture
 
 ```
 strategy_config.json ←─ Dashboard (parameter panel + save)
         │
         ▼
-Twelve Data API ──→ 15-min OHLCV ──→ numpy indicators
-                                         │
-                                         ▼
-                                   Signal evaluation
-                                   (oversold / trend)
-                                         │
-                                         ▼
-                                   ib_insync ──→ IB Gateway ──→ IBKR (paper)
-                                         ▲
-                                   Hermes cron (every 5 min)
-                                         │
-                                         ▼
-                                   data.json ──→ Dashboard HTML (server.py)
-                                         │
-                                   backtest.py (30-day simulation)
+Twelve Data API ──→ Rate Limiter ──→ Data Cache ──→ OHLCV ──→ numpy indicators
+                                         │                        │
+                                         ▼                        ▼
+                                   (cache hit skip)         Signal evaluation
+                                                            (oversold / trend)
+                                                                 │
+                                                                 ▼
+                                                          ib_insync ──→ IB Gateway ──→ IBKR (paper)
+                                                                 ▲                      │
+                                                          Hermes cron (every 5 min)    │
+                                                                 │                      │
+                                                                 ▼                      ▼
+                                                          data.json ──→ Dashboard  CircuitBreaker ──→ Notifier
+                                                                 │                      (webhook)
+                                                          backtest.py (30-day simulation
+                                                          → equity curve + trade list)
 ```
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `ibkr_strategy.py` | Live trading strategy (reads config, trades via IBKR) |
-| `backtest.py` | 30-day historical backtest engine |
+| `ibkr_strategy.py` | Live ETF trading strategy (reads config, trades via IBKR) |
+| `ibkr_forex_strategy.py` | Live forex trading strategy (EUR/USD, GBP/USD, USD/JPY) |
+| `backtest.py` | 30-day historical backtest engine (equity curve + trade list) |
 | `strategy_core.py` | Shared indicator calculation + signal functions |
+| `circuit_breaker.py` | State-machine circuit breaker (replaces fail_count.json) |
+| `data_cache.py` | TTL+LRU cache for Twelve Data API responses |
+| `rate_limiter.py` | Request rate limiter with jitter + UA rotation |
+| `notifier.py` | Webhook notification channel (trades, stop losses, errors) |
 | `server.py` | HTTP server (serves dashboard, config save, backtest trigger) |
 | `dashboard.html` | Real-time monitoring dashboard with config/backtest panels |
+| `forex_dashboard.html` | Forex-specific monitoring dashboard |
 | `strategy_config.json` | Editable strategy parameters |
 | `data.json` | Live snapshot output (market data, signals, session stats) |
 | `CONTEXT.md` | This file — domain glossary and architecture |

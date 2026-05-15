@@ -216,6 +216,20 @@
   <div class="bt-status" id="btMsg"></div>
   <div class="bt-metrics" id="btMetrics"></div>
   <div style="font-size:12px;color:var(--muted)" id="btDetail"></div>
+  <canvas id="btEquityCanvas" style="display:none;margin-top:12px;border-radius:6px;background:var(--panel);width:100%;height:120px"></canvas>
+  <div style="margin-top:8px;overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:11px">
+      <thead><tr style="color:var(--muted)">
+        <th style="text-align:left;padding:4px 8px">ETF</th>
+        <th style="text-align:left;padding:4px 8px">方向</th>
+        <th style="text-align:left;padding:4px 8px">模式</th>
+        <th style="text-align:right;padding:4px 8px">价格</th>
+        <th style="text-align:left;padding:4px 8px">原因</th>
+        <th style="text-align:right;padding:4px 8px">盈亏</th>
+      </tr></thead>
+      <tbody id="btTradeBody"></tbody>
+    </table>
+  </div>
 </div>
 
 
@@ -713,6 +727,60 @@ function renderBacktest(d) {
 
   document.getElementById('btMsg').textContent =
     `${d.symbols_used?.length || '?'} ETF × ${d.bars_simulated || '?'} 根K线 | 起始 $${(d.starting_nlv||0).toLocaleString()}`;
+
+  // ── 权益曲线 (mini canvas) ──
+  const ec = d.equity_curve || [];
+  if (ec.length > 1) {
+    const canvas = document.getElementById('btEquityCanvas');
+    const w = canvas.width = canvas.parentElement.clientWidth - 32;
+    const h = canvas.height = 120;
+    const ctx = canvas.getContext('2d');
+    const minY = Math.min(0, ...ec), maxY = Math.max(0, ...ec);
+    const range = maxY - minY || 1;
+    const scaleX = w / (ec.length - 1);
+    const scaleY = h / range;
+
+    ctx.clearRect(0, 0, w, h);
+    // Grid
+    ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 4; i++) {
+      const y = h * i / 4;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+    // Zero line
+    if (minY < 0 && maxY > 0) {
+      const y0 = h - (0 - minY) * scaleY;
+      ctx.strokeStyle = '#444'; ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(w, y0); ctx.stroke();
+    }
+    // Curve
+    ctx.strokeStyle = '#4ade80'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < ec.length; i++) {
+      const x = i * scaleX, y = h - (ec[i] - minY) * scaleY;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    // Labels
+    ctx.fillStyle = '#888'; ctx.font = '10px monospace';
+    ctx.fillText('$' + maxY.toFixed(0), 4, 12);
+    ctx.fillText('$' + minY.toFixed(0), 4, h - 4);
+    canvas.style.display = 'block';
+  }
+
+  // ── 逐笔交易列表 ──
+  const tl = d.trade_list || [];
+  const tbody = document.getElementById('btTradeBody');
+  tbody.innerHTML = tl.slice(-30).reverse().map(t => {
+    const pnlClass = (t.pnl||0) >= 0 ? 'bt-pnl-win' : 'bt-pnl-loss';
+    return `<tr>
+      <td>${t.sym}</td><td>${t.action}</td><td>${t.mode||''}</td>
+      <td>$${(t.price||0).toFixed(2)}</td><td>${t.reason||''}</td>
+      <td class="${pnlClass}">$${(t.pnl||0).toFixed(2)}</td>
+    </tr>`;
+  }).join('');
+  if (tl.length > 30) {
+    tbody.innerHTML += `<tr><td colspan="6" style="color:#666;font-size:11px">...共 ${tl.length} 笔，显示最近 30 笔</td></tr>`;
+  }
 }
 
 loadConfig();

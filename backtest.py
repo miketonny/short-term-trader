@@ -213,6 +213,8 @@ def run_backtest(cfg):
         },
         "max_drawdown_pct": round(max_drawdown_pct * 100, 2),
         "starting_nlv": nlv,
+        "equity_curve": equity_curve[::max(1, len(equity_curve) // 200)],  # downsample to ~200 points
+        "trade_list": trades,
         "detail": trade_summary(trades),
     }
 

@@ -45,10 +45,32 @@ INTERVAL = "15min"
 
 TWELVE_DATA_KEY = "a3377a4097ee4b2fba8a646a6dd898ab"
 
+# ── 导入共用模块 ──
+sys.path.insert(0, os.path.expanduser("~/short-term-trader"))
+from strategy_core import (calc_rsi, calc_sma, calc_bbands, calc_adx, calc_macd,
+                           check_buy_oversold, check_buy_trend,
+                           check_sell_oversold, check_sell_trend, determine_mode)
+from circuit_breaker import CircuitBreaker
+from data_cache import DataCache, get_cache
+from rate_limiter import get_twelve_data_limiter, random_ua
+from notifier import notify_trade, notify_error, notify_stop_loss
+from ib_insync import IB, Forex, MarketOrder
+
 # 输出
 DASHBOARD_DIR = os.path.expanduser("~/forex_dashboard")
-FAIL_COUNT_FILE = os.path.join(DASHBOARD_DIR, "fail_count.json")
 os.makedirs(DASHBOARD_DIR, exist_ok=True)
+
+# ── 熔断器 ──
+_circuit = CircuitBreaker(
+    "ibkr_forex",
+    threshold=3,
+    cooldown=600,
+    persist_path=os.path.join(DASHBOARD_DIR, "circuit_state.json"),
+)
+
+# ── 缓存 & 限流 ──
+_cache = get_cache()
+_limiter = get_twelve_data_limiter()
 
 # Pip 值 (per 100k units in USD)
 PIP_VALUES = {"EUR.USD": 10.0, "GBP.USD": 10.0, "USD.JPY": 9.0}
@@ -86,33 +108,19 @@ def calc_position_size(nlv, pair):
     units = max(20000, min(units, 500000))  # 0.2~5 lots, cap for safety
     return units
 
-# ════════════════ 失败计数 ════════════════
-def get_fail_count():
-    try:
-        with open(FAIL_COUNT_FILE) as f:
-            return json.load(f).get("count", 0)
-    except:
-        return 0
-
-def set_fail_count(n):
-    with open(FAIL_COUNT_FILE, "w") as f:
-        json.dump({"count": n, "time": datetime.now().strftime("%H:%M:%S")}, f)
-
-# ════════════════ 导入策略核心 ════════════════
-sys.path.insert(0, os.path.expanduser("~/short-term-trader"))
-from strategy_core import (calc_rsi, calc_sma, calc_bbands, calc_adx, calc_macd,
-                           check_buy_oversold, check_buy_trend,
-                           check_sell_oversold, check_sell_trend, determine_mode)
-
-from ib_insync import IB, Forex, MarketOrder
-
 # ════════════════ 数据获取 ════════════════
 async def fetch_forex_data(td_pair):
-    """从 Twelve Data 拉 OHLCV"""
+    """从 Twelve Data 拉 OHLCV — 带缓存和限流"""
+    cache_key = f"forex:{td_pair}:{INTERVAL}:{CANDLES}"
+    cached = _cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     import urllib.request
 
+    _limiter.wait()
     url = f"https://api.twelvedata.com/time_series?symbol={td_pair}&interval={INTERVAL}&outputsize={CANDLES}&apikey={TWELVE_DATA_KEY}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": random_ua()})
 
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -142,12 +150,15 @@ async def fetch_forex_data(td_pair):
 
     price = closes[-1]
 
-    return {
+    result = {
         "price": price, "rsi": rsi, "sma": sma,
         "bb_upper": upper, "bb_middle": middle, "bb_lower": lower,
         "adx": adx, "macd_ml": ml, "macd_sl": sl,
         "macd_hist": hist, "macd_prev_hist": ph
     }
+    ttl = DataCache.ttl_for_interval(INTERVAL)
+    _cache.put(cache_key, result, ttl=ttl)
+    return result
 
 # ════════════════ 市场时段 ════════════════
 def is_forex_market_open():
@@ -189,20 +200,23 @@ async def place_and_confirm(ib, ibkr_pair, action, quantity):
 # ════════════════ 主逻辑 ════════════════
 async def run():
     now = datetime.now()
-    fails = get_fail_count()
 
-    if fails >= MAX_RETRIES:
-        print(f"⛔ 已失败 {fails}/{MAX_RETRIES} 次，停止重试。")
+    # ── 熔断检查 ──
+    if not _circuit.available():
+        remaining = int(_circuit.remaining_cooldown)
+        print(f"⛔ 熔断中（剩余 {remaining}s），跳过本轮。")
         return
 
     ib = IB()
     try:
         await ib.connectAsync(IB_HOST, IB_PORT, clientId=CLIENT_ID, timeout=10)
-        set_fail_count(0)
+        _circuit.success()
     except Exception as e:
-        fails += 1
-        set_fail_count(fails)
-        print(f"❌ IB 连接失败 ({fails}/{MAX_RETRIES}): {e}")
+        _circuit.failure(str(e))
+        print(f"❌ IB 连接失败 ({_circuit.failures}/{_circuit.threshold}): {e}")
+        if _circuit.is_blocked:
+            notify_error("ibkr_forex_gateway", str(e))
+            print("⛔ 熔断触发，暂停自动交易。")
         return
 
     try:
@@ -404,6 +418,7 @@ async def run():
                                 "sym": display_pair, "action": "BUY", "price": fill_price,
                                 "qty": qty, "time": now.strftime("%H:%M:%S")
                             })
+                            notify_trade(display_pair, "BUY", fill_price, qty)
                     else:
                         print("")
 
@@ -444,6 +459,7 @@ async def run():
                                 "sym": display_pair, "action": "BUY", "price": fill_price,
                                 "qty": qty, "time": now.strftime("%H:%M:%S")
                             })
+                            notify_trade(display_pair, "BUY", fill_price, qty)
                     else:
                         print("")
                 else:
@@ -501,6 +517,7 @@ async def run():
                             "price": round(price, 5), "qty": pos["qty"],
                             "pnl": round(pnl_usd, 2), "time": now.strftime("%H:%M:%S")
                         })
+                        notify_stop_loss(display_pair, price, effective_stop, reason)
                         positions[display_pair] = None
                 elif sell_names:
                     in_cooldown = False
@@ -526,6 +543,8 @@ async def run():
                                 "price": round(price, 5), "qty": pos["qty"],
                                 "pnl": round(pnl_usd, 2), "time": now.strftime("%H:%M:%S")
                             })
+                            notify_trade(display_pair, "SELL", price, pos["qty"],
+                                         reason=",".join(sell_names))
                             positions[display_pair] = None
                 else:
                     pnl_pips = (price - entry_price) / pip_size
