@@ -42,9 +42,14 @@ class Handler(SimpleHTTPRequestHandler):
             import subprocess, threading
             def run():
                 result_path = DASHBOARD_DIR / "backtest_result.json"
+                # Auto-detect venv python (server vs local)
+                import sys as _sys
+                _python = _sys.executable  # use same python that runs server
+                _bt_script = Path(os.path.expanduser("~/short-term-trader")) / "backtest.py"
                 try:
-                    subprocess.run(["/home/maizi/.hermes/hermes-agent/venv/bin/python3", str(DASHBOARD_DIR / "backtest.py")],
-                                   capture_output=True, text=True, timeout=120, cwd=str(DASHBOARD_DIR))
+                    subprocess.run([_python, str(_bt_script)],
+                                   capture_output=True, text=True, timeout=120,
+                                   cwd=str(_bt_script.parent))
                 except:
                     pass
                 Handler._bt_running = False
