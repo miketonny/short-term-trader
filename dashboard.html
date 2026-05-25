@@ -443,7 +443,7 @@ function renderTradeHistory(data) {
     const pnlText = t.action === 'SELL' && t.pnl != null ? '$' + t.pnl.toFixed(2) : '--';
     const reasonTag = t.reason ? ' <span class="trade-reason">(' + (t.reason === 'stop_loss' ? '止损' : '信号') + ')</span>' : '';
     return '<tr>' +
-      '<td style="color:var(--muted)">' + (t.time || '') + '</td>' +
+      '<td style="color:var(--muted);white-space:nowrap">' + (t.date || '') + ' ' + (t.time || '') + '</td>' +
       '<td style="font-weight:600">' + (t.sym || '') + '</td>' +
       '<td class="' + dirClass + '">' + dirText + reasonTag + '</td>' +
       '<td>' + (t.qty || '') + '</td>' +

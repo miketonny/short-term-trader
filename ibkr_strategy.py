@@ -540,7 +540,7 @@ async def run():
                             if filled:
                                 prev_last_buys[sym] = now.isoformat()
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
-                                session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "qty": qty, "time": now.strftime("%H:%M:%S")})
+                                session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "qty": qty, "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
                                 notify_trade(sym, "BUY", fill_price, qty)
                         else:
                             print("  (NLV不可用)")
@@ -568,7 +568,7 @@ async def run():
                             if filled:
                                 prev_last_buys[sym] = now.isoformat()
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
-                                session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "qty": qty, "time": now.strftime("%H:%M:%S")})
+                                session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "qty": qty, "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
                                 notify_trade(sym, "BUY", fill_price, qty)
                         else:
                             print("  (NLV不可用)")
@@ -598,7 +598,7 @@ async def run():
                     if filled:
                         prev_last_sells[sym] = now.isoformat()
                         pnl = (float(trade.fillPrice) - pos["avg_cost"]) * pos["qty"] if hasattr(trade, 'fillPrice') else 0
-                        session_trades.append({"sym": sym, "action": "SELL", "reason": "stop_loss", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "time": now.strftime("%H:%M:%S")})
+                        session_trades.append({"sym": sym, "action": "SELL", "reason": "stop_loss", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
                         notify_stop_loss(sym, price, stop_price, "hard")
                         positions[sym] = None
                         sell_triggers = ["硬止损"]
@@ -626,7 +626,7 @@ async def run():
                                 pnl = (pos.get("last_price", pos["avg_cost"]) - pos["avg_cost"]) * pos["qty"]
                                 # Use current price as approximate fill for P&L calc
                                 pnl = (price - pos["avg_cost"]) * pos["qty"]
-                                session_trades.append({"sym": sym, "action": "SELL", "reason": "technical", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "time": now.strftime("%H:%M:%S")})
+                                session_trades.append({"sym": sym, "action": "SELL", "reason": "technical", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
                                 notify_trade(sym, "SELL", price, pos["qty"], reason=",".join(sell_triggers))
                                 positions[sym] = None
                     elif not in_cooldown:
