@@ -50,7 +50,7 @@ _circuit = CircuitBreaker(
 )
 
 # ── 读取策略配置（Dashboard 可编辑）──
-CONFIG_FILE = os.path.expanduser("~/ibkr_dashboard/strategy_config.json")
+CONFIG_FILE = os.path.expanduser("~/ibkr_dashboard/strategy_config.json")  # may be overridden from config
 def load_config():
     """从 strategy_config.json 加载参数，覆盖默认值"""
     try:
@@ -303,7 +303,16 @@ async def place_and_confirm(ib, sym, action, quantity):
 
 # ============ 主逻辑 ============
 async def run():
+    global DASHBOARD_DIR, IB_PORT, CONFIG_FILE
     now = datetime.now()
+
+    # ── 加载配置 ──
+    global DASHBOARD_DIR, IB_PORT, CONFIG_FILE  # may override from config
+    _cfg = load_config()
+    IB_PORT = _cfg.get("ib_port", IB_PORT)
+    DASHBOARD_DIR = os.path.expanduser(_cfg.get("dashboard_dir", "~/ibkr_dashboard"))
+    os.makedirs(DASHBOARD_DIR, exist_ok=True)
+    CONFIG_FILE = os.path.join(DASHBOARD_DIR, "strategy_config.json")
 
     # ── 熔断检查 ──
     if not _circuit.available():
@@ -525,7 +534,7 @@ async def run():
                             pass
                     if all_ok:
                         if nlv and nlv > 0:
-                            qty = int((nlv * POSITION_ALLOC * LEVERAGE) / price)
+                            qty = round((nlv * POSITION_ALLOC * LEVERAGE) / price, 3)  # fractional shares
                             print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
                             filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty)
                             if filled:
@@ -553,7 +562,7 @@ async def run():
                             pass
                     if all_ok:
                         if nlv and nlv > 0:
-                            qty = int((nlv * POSITION_ALLOC * LEVERAGE) / price)
+                            qty = round((nlv * POSITION_ALLOC * LEVERAGE) / price, 3)  # fractional shares
                             print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
                             filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty)
                             if filled:
