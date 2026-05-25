@@ -36,6 +36,7 @@ LEVERAGE = 1.0
 ORDER_TIMEOUT = 10
 STOP_LOSS_PCT = 0.02
 COOLDOWN_MINUTES = 15
+MAX_RETRIES = 3
 
 DASHBOARD_DIR = os.path.expanduser("~/ibkr_dashboard")
 os.makedirs(DASHBOARD_DIR, exist_ok=True)
@@ -308,12 +309,44 @@ async def run():
     if not _circuit.available():
         remaining = int(_circuit.remaining_cooldown)
         print(f"⛔ 熔断中（剩余 {remaining}s），跳过本轮。最后错误: {_circuit.last_error}")
-        dashboard = {
+        try:
+            with open(f"{DASHBOARD_DIR}/data.json") as f:
+                dashboard = json.load(f)
+        except:
+            dashboard = {}
+        dashboard.update({
             "time": now.strftime("%H:%M:%S"), "date": now.strftime("%Y-%m-%d"),
             "market_status": "blocked", "market_text": f"⛔ 已熔断 ({remaining}s剩余)",
-            "market_et": _circuit.last_error or "", "news": [], "symbols": {},
-            "positions": {}, "account": None
-        }
+            "market_et": _circuit.last_error or "",
+        })
+        dashboard.setdefault("news", [])
+        dashboard.setdefault("symbols", {})
+        dashboard.setdefault("positions", {})
+        dashboard.setdefault("account", None)
+        with open(f"{DASHBOARD_DIR}/data.json", "w") as f:
+            json.dump(dashboard, f)
+        return
+
+    # ── 市场时段检测（在IB连接之前，避免非交易时段累积熔断计数）──
+    status_code, status_text, et_time, should_trade_early = get_market_info()
+    if not should_trade_early:
+        print(f"  非交易时段 ({status_text})，跳过连接")
+        try:
+            with open(f"{DASHBOARD_DIR}/data.json") as f:
+                dashboard = json.load(f)
+        except:
+            dashboard = {}
+        dashboard.update({
+            "time": now.strftime("%H:%M:%S"), "date": now.strftime("%Y-%m-%d"),
+            "market_status": status_code, "market_text": status_text,
+            "market_et": et_time,
+        })
+        dashboard.setdefault("news", [])
+        dashboard.setdefault("symbols", {})
+        dashboard.setdefault("positions", {})
+        dashboard.setdefault("account", None)
+        dashboard.setdefault("trade_history", [])
+        dashboard.setdefault("session_stats", {})
         with open(f"{DASHBOARD_DIR}/data.json", "w") as f:
             json.dump(dashboard, f)
         return

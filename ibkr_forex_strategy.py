@@ -17,8 +17,7 @@ CLIENT_ID = 20
 
 # 货币对 (显示名 → IBKR 合约名)
 PAIRS = {
-    "EUR.USD": "EURUSD",
-    "GBP.USD": "GBPUSD",
+    # EUR.USD & GBP.USD removed 2026-05-20 - consistently unprofitable
     "USD.JPY": "USDJPY",
 }
 
@@ -198,6 +197,29 @@ async def place_and_confirm(ib, ibkr_pair, action, quantity):
     return False, None
 
 # ════════════════ 主逻辑 ════════════════
+def _write_dashboard_status(status, status_text, extra=None):
+    import json, os
+    from datetime import datetime
+    try:
+        with open(os.path.expanduser('~/forex_dashboard/data.json')) as f:
+            existing = json.load(f)
+    except:
+        existing = {}
+    dashboard = {
+        'time': datetime.now().strftime('%H:%M:%S'),
+        'date': datetime.now().strftime('%Y-%m-%d'),
+        'status': status, 'status_text': status_text,
+        'nlv': existing.get('nlv'),
+        'pairs': existing.get('pairs', {}),
+        'positions': existing.get('positions', {}),
+        'trade_history': existing.get('trade_history', []),
+        'session_stats': existing.get('session_stats', {}),
+    }
+    if extra:
+        dashboard['_extra'] = extra
+    with open(os.path.expanduser('~/forex_dashboard/data.json'), 'w') as f:
+        json.dump(dashboard, f)
+
 async def run():
     now = datetime.now()
 
@@ -205,6 +227,13 @@ async def run():
     if not _circuit.available():
         remaining = int(_circuit.remaining_cooldown)
         print(f"⛔ 熔断中（剩余 {remaining}s），跳过本轮。")
+        _write_dashboard_status("blocked", "⛔ 熔断中", {"cooldown_remaining_s": remaining})
+        return
+
+    # ── 周末/休市检测（在IB连接之前，避免周末累积熔断计数）──
+    if not is_forex_market_open():
+        print("  非交易时段 (周末休市)")
+        _write_dashboard_status("closed", "🔴 休市")
         return
 
     ib = IB()
@@ -217,6 +246,9 @@ async def run():
         if _circuit.is_blocked:
             notify_error("ibkr_forex_gateway", str(e))
             print("⛔ 熔断触发，暂停自动交易。")
+            _write_dashboard_status("blocked", "⛔ 熔断中", {"last_error": str(e)})
+        else:
+            _write_dashboard_status("gateway_down", "🔴 网关断连", {"last_error": str(e), "failures": _circuit.failures})
         return
 
     try:
