@@ -14,6 +14,7 @@ from ib_insync import IB, Stock, MarketOrder
 # ── 共用模块 ──
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from circuit_breaker import CircuitBreaker
+from tg_notify import send as tg
 from data_cache import DataCache, get_cache
 from rate_limiter import get_twelve_data_limiter, random_ua
 from notifier import notify_trade, notify_error, notify_stop_loss
@@ -292,6 +293,10 @@ async def place_and_confirm(ib, sym, action, quantity):
         if status == "Filled":
             avg_price = trade.orderStatus.avgFillPrice
             print(f"  ✅ {action} {sym} ×{quantity:.3f} @ ${avg_price:.2f}")
+            if action == "BUY":
+                tg(f"🔔 BUY {sym} {quantity:.3f} @ ${avg_price:.2f}")
+            else:
+                tg(f"💰 SELL {sym} {quantity:.3f} @ ${avg_price:.2f}")
             return True, avg_price
         if status in ("Cancelled", "Inactive", "Rejected"):
             print(f"  ❌ {sym} 订单失败: {status}")
@@ -369,7 +374,7 @@ async def run():
         _circuit.failure(str(e))
         print(f"❌ IB 连接失败 ({_circuit.failures}/{_circuit.threshold}): {e}")
         if _circuit.is_blocked:
-            notify_error("ibkr_etf_gateway", str(e))
+            notify_error("ibkr_etf_gateway", str(e)); tg(f"⛔ ETF熔断！连续{_circuit.threshold}次连接失败: {str(e)[:100]}")
             print("⛔ 熔断触发，暂停自动交易。")
         return
 
@@ -594,6 +599,7 @@ async def run():
                 # ── 硬止损（无条件）──
                 if price <= stop_price:
                     print(f"  🛑 STOP LOSS {sym}: ${price:.2f} ≤ ${stop_price:.2f} (-{STOP_LOSS_PCT*100:.0f}%)")
+                    tg(f"🛑 STOP LOSS {sym} {pos_qty}股 @ ${price:.2f}")
                     filled, _ = await place_and_confirm(ib, sym, "SELL", pos["qty"])
                     if filled:
                         prev_last_sells[sym] = now.isoformat()

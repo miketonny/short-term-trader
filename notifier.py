@@ -17,6 +17,12 @@ from datetime import datetime
 WEBHOOK_URL = os.environ.get("NOTIFY_WEBHOOK_URL", "")
 ENABLED = bool(WEBHOOK_URL)
 
+# Telegram fallback (direct Bot API, no webhook needed)
+try:
+    from tg_notify import send as tg_send
+except ImportError:
+    tg_send = None
+
 
 def notify(event, data=None, timeout=5):
     """发送 webhook 通知（同步，非阻塞）。失败静默忽略。"""
@@ -42,6 +48,9 @@ def notify(event, data=None, timeout=5):
 
 # ── 便捷函数 ──
 def notify_trade(symbol, action, price, qty=None, reason=None):
+    if tg_send:
+        emoji = '🔔' if action == 'BUY' else '💰'
+        tg_send(f"{emoji} {action} {symbol} {qty or ''} @ ${price}")
     notify("trade", {
         "symbol": symbol,
         "action": action,
@@ -51,9 +60,13 @@ def notify_trade(symbol, action, price, qty=None, reason=None):
     })
 
 def notify_error(source, message):
+    if tg_send:
+        tg_send(f"⛔ {source} error: {str(message)[:200]}")
     notify("error", {"source": source, "message": str(message)[:500]})
 
 def notify_stop_loss(symbol, price, stop_price, mode="hard"):
+    if tg_send:
+        tg_send(f"🛑 STOP {symbol} @ ${price} ({mode})")
     notify("stop_loss", {
         "symbol": symbol,
         "price": price,
