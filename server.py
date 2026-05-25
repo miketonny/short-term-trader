@@ -98,7 +98,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = HTTPServer(("0.0.0.0", PORT), Handler)
+    server = HTTPServer(("127.0.0.1", PORT), Handler)
     print(f"📊 Dashboard: http://localhost:{PORT}")
     print(f"   Config save: POST /save_config")
     try:

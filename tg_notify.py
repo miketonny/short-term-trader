@@ -1,9 +1,11 @@
 import requests, os
 
-TOKEN = os.environ.get('TG_TOKEN', 'TOKEN_REMOVED')
+TOKEN = os.environ.get('TG_TOKEN', '')
 CHAT_ID = os.environ.get('TG_CHAT_ID', '6849175810')
 
 def send(text):
+    if not TOKEN:
+        return
     try:
         requests.post(
             f'https://api.telegram.org/bot{TOKEN}/sendMessage',

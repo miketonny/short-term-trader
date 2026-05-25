@@ -30,6 +30,8 @@
   }
   .status-live { background: rgba(34,197,94,0.15); color: var(--green); }
   .status-paused { background: rgba(234,179,8,0.15); color: var(--yellow); }
+  .status-blocked { background: rgba(239,68,68,0.18); color: var(--red); animation: pulse 1.5s infinite; }
+  .status-gateway_down { background: rgba(239,68,68,0.15); color: var(--red); }
 
   .dot-live { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; background: var(--green); animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
@@ -170,7 +172,7 @@ function render(data) {
   // Status
   const badge = document.getElementById('statusBadge');
   badge.textContent = data.status_text || '🟢 交易中';
-  badge.className = 'status-badge ' + (data.status === 'paused' ? 'status-paused' : 'status-live');
+  badge.className = 'status-badge ' + ({blocked:'status-blocked',gateway_down:'status-gateway_down',paused:'status-paused'}[data.status] || 'status-live');
 
   document.getElementById('statusLine').textContent =
     `最后更新: ${data.time} · ${data.date}`;

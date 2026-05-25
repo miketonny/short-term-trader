@@ -14,7 +14,6 @@ from ib_insync import IB, Stock, MarketOrder
 # ── 共用模块 ──
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from circuit_breaker import CircuitBreaker
-from tg_notify import send as tg
 from data_cache import DataCache, get_cache
 from rate_limiter import get_twelve_data_limiter, random_ua
 from notifier import notify_trade, notify_error, notify_stop_loss
@@ -37,7 +36,6 @@ LEVERAGE = 1.0
 ORDER_TIMEOUT = 10
 STOP_LOSS_PCT = 0.02
 COOLDOWN_MINUTES = 15
-MAX_RETRIES = 3
 
 DASHBOARD_DIR = os.path.expanduser("~/ibkr_dashboard")
 os.makedirs(DASHBOARD_DIR, exist_ok=True)
@@ -51,7 +49,7 @@ _circuit = CircuitBreaker(
 )
 
 # ── 读取策略配置（Dashboard 可编辑）──
-CONFIG_FILE = os.path.expanduser("~/ibkr_dashboard/strategy_config.json")  # may be overridden from config
+CONFIG_FILE = os.path.expanduser("~/ibkr_dashboard/strategy_config.json")
 def load_config():
     """从 strategy_config.json 加载参数，覆盖默认值"""
     try:
@@ -293,10 +291,6 @@ async def place_and_confirm(ib, sym, action, quantity):
         if status == "Filled":
             avg_price = trade.orderStatus.avgFillPrice
             print(f"  ✅ {action} {sym} ×{quantity:.3f} @ ${avg_price:.2f}")
-            if action == "BUY":
-                tg(f"🔔 BUY {sym} {quantity:.3f} @ ${avg_price:.2f}")
-            else:
-                tg(f"💰 SELL {sym} {quantity:.3f} @ ${avg_price:.2f}")
             return True, avg_price
         if status in ("Cancelled", "Inactive", "Rejected"):
             print(f"  ❌ {sym} 订单失败: {status}")
@@ -308,59 +302,18 @@ async def place_and_confirm(ib, sym, action, quantity):
 
 # ============ 主逻辑 ============
 async def run():
-    global DASHBOARD_DIR, IB_PORT, CONFIG_FILE
     now = datetime.now()
-
-    # ── 加载配置 ──
-    global DASHBOARD_DIR, IB_PORT, CONFIG_FILE  # may override from config
-    _cfg = load_config()
-    IB_PORT = _cfg.get("ib_port", IB_PORT)
-    DASHBOARD_DIR = os.path.expanduser(_cfg.get("dashboard_dir", "~/ibkr_dashboard"))
-    os.makedirs(DASHBOARD_DIR, exist_ok=True)
-    CONFIG_FILE = os.path.join(DASHBOARD_DIR, "strategy_config.json")
 
     # ── 熔断检查 ──
     if not _circuit.available():
         remaining = int(_circuit.remaining_cooldown)
         print(f"⛔ 熔断中（剩余 {remaining}s），跳过本轮。最后错误: {_circuit.last_error}")
-        try:
-            with open(f"{DASHBOARD_DIR}/data.json") as f:
-                dashboard = json.load(f)
-        except:
-            dashboard = {}
-        dashboard.update({
+        dashboard = {
             "time": now.strftime("%H:%M:%S"), "date": now.strftime("%Y-%m-%d"),
             "market_status": "blocked", "market_text": f"⛔ 已熔断 ({remaining}s剩余)",
-            "market_et": _circuit.last_error or "",
-        })
-        dashboard.setdefault("news", [])
-        dashboard.setdefault("symbols", {})
-        dashboard.setdefault("positions", {})
-        dashboard.setdefault("account", None)
-        with open(f"{DASHBOARD_DIR}/data.json", "w") as f:
-            json.dump(dashboard, f)
-        return
-
-    # ── 市场时段检测（在IB连接之前，避免非交易时段累积熔断计数）──
-    status_code, status_text, et_time, should_trade_early = get_market_info()
-    if not should_trade_early:
-        print(f"  非交易时段 ({status_text})，跳过连接")
-        try:
-            with open(f"{DASHBOARD_DIR}/data.json") as f:
-                dashboard = json.load(f)
-        except:
-            dashboard = {}
-        dashboard.update({
-            "time": now.strftime("%H:%M:%S"), "date": now.strftime("%Y-%m-%d"),
-            "market_status": status_code, "market_text": status_text,
-            "market_et": et_time,
-        })
-        dashboard.setdefault("news", [])
-        dashboard.setdefault("symbols", {})
-        dashboard.setdefault("positions", {})
-        dashboard.setdefault("account", None)
-        dashboard.setdefault("trade_history", [])
-        dashboard.setdefault("session_stats", {})
+            "market_et": _circuit.last_error or "", "news": [], "symbols": {},
+            "positions": {}, "account": None
+        }
         with open(f"{DASHBOARD_DIR}/data.json", "w") as f:
             json.dump(dashboard, f)
         return
@@ -373,11 +326,8 @@ async def run():
     except Exception as e:
         _circuit.failure(str(e))
         print(f"❌ IB 连接失败 ({_circuit.failures}/{_circuit.threshold}): {e}")
-        if _circuit.should_notify():
-            notify_error("ibkr_etf_gateway", str(e))
-            tg(f"⛔ ETF熔断！连续{_circuit.threshold}次连接失败: {str(e)[:100]}")
-            _circuit.mark_notified()
         if _circuit.is_blocked:
+            notify_error("ibkr_etf_gateway", str(e))
             print("⛔ 熔断触发，暂停自动交易。")
         return
 
@@ -542,13 +492,13 @@ async def run():
                             pass
                     if all_ok:
                         if nlv and nlv > 0:
-                            qty = round((nlv * POSITION_ALLOC * LEVERAGE) / price, 3)  # fractional shares
+                            qty = int((nlv * POSITION_ALLOC * LEVERAGE) / price)
                             print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
                             filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty)
                             if filled:
                                 prev_last_buys[sym] = now.isoformat()
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
-                                session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "qty": qty, "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
+                                session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "qty": qty, "time": now.strftime("%H:%M:%S")})
                                 notify_trade(sym, "BUY", fill_price, qty)
                         else:
                             print("  (NLV不可用)")
@@ -570,13 +520,13 @@ async def run():
                             pass
                     if all_ok:
                         if nlv and nlv > 0:
-                            qty = round((nlv * POSITION_ALLOC * LEVERAGE) / price, 3)  # fractional shares
+                            qty = int((nlv * POSITION_ALLOC * LEVERAGE) / price)
                             print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
                             filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty)
                             if filled:
                                 prev_last_buys[sym] = now.isoformat()
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
-                                session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "qty": qty, "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
+                                session_trades.append({"sym": sym, "action": "BUY", "price": fill_price, "qty": qty, "time": now.strftime("%H:%M:%S")})
                                 notify_trade(sym, "BUY", fill_price, qty)
                         else:
                             print("  (NLV不可用)")
@@ -602,12 +552,11 @@ async def run():
                 # ── 硬止损（无条件）──
                 if price <= stop_price:
                     print(f"  🛑 STOP LOSS {sym}: ${price:.2f} ≤ ${stop_price:.2f} (-{STOP_LOSS_PCT*100:.0f}%)")
-                    tg(f"🛑 STOP LOSS {sym} {pos_qty}股 @ ${price:.2f}")
                     filled, _ = await place_and_confirm(ib, sym, "SELL", pos["qty"])
                     if filled:
                         prev_last_sells[sym] = now.isoformat()
                         pnl = (float(trade.fillPrice) - pos["avg_cost"]) * pos["qty"] if hasattr(trade, 'fillPrice') else 0
-                        session_trades.append({"sym": sym, "action": "SELL", "reason": "stop_loss", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
+                        session_trades.append({"sym": sym, "action": "SELL", "reason": "stop_loss", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "time": now.strftime("%H:%M:%S")})
                         notify_stop_loss(sym, price, stop_price, "hard")
                         positions[sym] = None
                         sell_triggers = ["硬止损"]
@@ -635,7 +584,7 @@ async def run():
                                 pnl = (pos.get("last_price", pos["avg_cost"]) - pos["avg_cost"]) * pos["qty"]
                                 # Use current price as approximate fill for P&L calc
                                 pnl = (price - pos["avg_cost"]) * pos["qty"]
-                                session_trades.append({"sym": sym, "action": "SELL", "reason": "technical", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
+                                session_trades.append({"sym": sym, "action": "SELL", "reason": "technical", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "time": now.strftime("%H:%M:%S")})
                                 notify_trade(sym, "SELL", price, pos["qty"], reason=",".join(sell_triggers))
                                 positions[sym] = None
                     elif not in_cooldown:

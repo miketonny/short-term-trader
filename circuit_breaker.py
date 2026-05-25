@@ -14,8 +14,11 @@
         cb.success()
     except Exception:
         cb.failure()
+        if cb.should_notify():
+            send_alert()
 
 状态持久化到 JSON，crash 后恢复。
+通知限频: should_notify() 默认 30min 内只发一次。
 """
 import json, os, time
 from enum import Enum
@@ -28,16 +31,18 @@ class State(Enum):
 
 
 class CircuitBreaker:
-    def __init__(self, name, threshold=3, cooldown=300, persist_path=None):
+    def __init__(self, name, threshold=3, cooldown=300, persist_path=None, notify_interval=1800):
         self.name = name
         self.threshold = threshold
         self.cooldown = cooldown
         self.persist_path = persist_path
+        self.notify_interval = notify_interval  # TG 通知最小间隔(秒)，默认30分钟
         self._state = State.CLOSED
         self._failures = 0
         self._last_failure = 0.0
         self._last_error = None
         self._half_tries = 0
+        self._last_notify = 0.0
         self._load()
 
     # ── 持久化 ──
@@ -51,6 +56,7 @@ class CircuitBreaker:
             self._failures = d.get("failures", 0)
             self._last_failure = d.get("last_failure", 0.0)
             self._last_error = d.get("last_error")
+            self._last_notify = d.get("last_notify", 0.0)
         except Exception:
             pass
 
@@ -64,6 +70,7 @@ class CircuitBreaker:
                 "failures": self._failures,
                 "last_failure": self._last_failure,
                 "last_error": self._last_error,
+                "last_notify": self._last_notify,
             }, f)
 
     # ── 核心方法 ──
@@ -99,11 +106,27 @@ class CircuitBreaker:
         self._last_failure = time.time()
         self._last_error = str(error)[:200] if error else None
 
+        old_state = self._state
         if self._state == State.HALF_OPEN:
             self._state = State.OPEN
         elif self._failures >= self.threshold:
             self._state = State.OPEN
 
+        # 首次进入 OPEN 时记录通知时间
+        if old_state != State.OPEN and self._state == State.OPEN:
+            self._last_notify = time.time()
+
+        self._save()
+
+    def should_notify(self):
+        """是否应该发送通知（限频：notify_interval 内只发一次）"""
+        if self._state != State.OPEN:
+            return False
+        return (time.time() - self._last_notify) >= self.notify_interval
+
+    def mark_notified(self):
+        """标记已通知，重置计时器"""
+        self._last_notify = time.time()
         self._save()
 
     def reset(self):
@@ -112,6 +135,7 @@ class CircuitBreaker:
         self._failures = 0
         self._half_tries = 0
         self._last_error = None
+        self._last_notify = 0.0
         self._save()
 
     # ── 状态查询 ──
