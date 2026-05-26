@@ -59,15 +59,14 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') $LOG_TAG mem: $(free -h | grep Mem | awk '{pr
 
 # --- 重启 paper (4002) ---
 if [ "$RESTART_PAPER" = true ]; then
-    GWPID=$(pgrep -f 'IbcGateway' 2>/dev/null | head -1)
-    # 只杀 paper (不是 live)
-    PCOUNT=$(pgrep -f 'IbcGateway' 2>/dev/null | wc -l)
-    if [ "$PCOUNT" -eq 1 ] && [ -n "$GWPID" ]; then
+    GWPID=$(pgrep -f 'config\.ini[^_]' 2>/dev/null)
+    if [ -n "$GWPID" ]; then
         echo "$(date '+%Y-%m-%d %H:%M:%S') $LOG_TAG kill paper gateway PID: $GWPID"
         kill -9 $GWPID 2>/dev/null; sleep 2
     fi
     if ! pgrep -f 'Xvfb :99' > /dev/null; then
-        Xvfb :99 -screen 0 1024x768x16 &; sleep 1
+        Xvfb :99 -screen 0 1024x768x16 & 
+    sleep 1
     fi
     cd /ibgateway/ibc && nohup bash gatewaystart.sh -inline > /tmp/paper_restart.log 2>&1 &
     for i in $(seq 1 30); do
@@ -86,7 +85,8 @@ if [ "$RESTART_LIVE" = true ]; then
         kill -9 $GWPID 2>/dev/null; sleep 2
     fi
     if ! pgrep -f 'Xvfb :98' > /dev/null; then
-        Xvfb :98 -screen 0 1024x768x16 &; sleep 1
+        Xvfb :98 -screen 0 1024x768x16 & 
+    sleep 1
     fi
     export DISPLAY=:98
     cd /ibgateway/ibc && nohup bash -c '
