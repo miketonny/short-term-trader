@@ -312,12 +312,13 @@ async def run():
     now = datetime.now()
 
     # ── 加载配置 ──
-    global DASHBOARD_DIR, IB_PORT, CONFIG_FILE  # may override from config
     _cfg = load_config()
     IB_PORT = _cfg.get("ib_port", IB_PORT)
     DASHBOARD_DIR = os.path.expanduser(_cfg.get("dashboard_dir", "~/ibkr_dashboard"))
     os.makedirs(DASHBOARD_DIR, exist_ok=True)
     CONFIG_FILE = os.path.join(DASHBOARD_DIR, "strategy_config.json")
+    # ── 同步熔断器 persist_path（模块加载时用旧 DASHBOARD_DIR）──
+    _circuit.persist_path = os.path.join(DASHBOARD_DIR, "circuit_state.json")
 
     # ── 熔断检查 ──
     if not _circuit.available():
@@ -602,11 +603,11 @@ async def run():
                 # ── 硬止损（无条件）──
                 if price <= stop_price:
                     print(f"  🛑 STOP LOSS {sym}: ${price:.2f} ≤ ${stop_price:.2f} (-{STOP_LOSS_PCT*100:.0f}%)")
-                    tg(f"🛑 STOP LOSS {sym} {pos_qty}股 @ ${price:.2f}")
-                    filled, _ = await place_and_confirm(ib, sym, "SELL", pos["qty"])
+                    tg(f"🛑 STOP LOSS {sym} {pos['qty']}股 @ ${price:.2f}")
+                    filled, fill_price = await place_and_confirm(ib, sym, "SELL", pos["qty"])
                     if filled:
                         prev_last_sells[sym] = now.isoformat()
-                        pnl = (float(trade.fillPrice) - pos["avg_cost"]) * pos["qty"] if hasattr(trade, 'fillPrice') else 0
+                        pnl = (fill_price - pos["avg_cost"]) * pos["qty"]
                         session_trades.append({"sym": sym, "action": "SELL", "reason": "stop_loss", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
                         notify_stop_loss(sym, price, stop_price, "hard")
                         positions[sym] = None
@@ -629,12 +630,10 @@ async def run():
                             sell_triggers = []
                         else:
                             print(f"  🔔 SELL {sym}: {sell_triggers}")
-                            filled, _ = await place_and_confirm(ib, sym, "SELL", pos["qty"])
+                            filled, fill_price = await place_and_confirm(ib, sym, "SELL", pos["qty"])
                             if filled:
                                 prev_last_sells[sym] = now.isoformat()
-                                pnl = (pos.get("last_price", pos["avg_cost"]) - pos["avg_cost"]) * pos["qty"]
-                                # Use current price as approximate fill for P&L calc
-                                pnl = (price - pos["avg_cost"]) * pos["qty"]
+                                pnl = (fill_price - pos["avg_cost"]) * pos["qty"]
                                 session_trades.append({"sym": sym, "action": "SELL", "reason": "technical", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
                                 notify_trade(sym, "SELL", price, pos["qty"], reason=",".join(sell_triggers))
                                 positions[sym] = None

@@ -1,6 +1,6 @@
 import http.server, os, sys, json, subprocess
 os.chdir(os.path.expanduser('~/live_ibkr_dashboard'))
-PORT = 8765
+PORT = 8767
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path == '/save_config':

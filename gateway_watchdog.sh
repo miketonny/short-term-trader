@@ -54,8 +54,8 @@ if [ "$NEED_RESTART" = false ]; then
     exit 0
 fi
 
-echo "$((COUNT+1))" > "$RESTART_COUNT"
 echo "$(date '+%Y-%m-%d %H:%M:%S') $LOG_TAG mem: $(free -h | grep Mem | awk '{print $3"/"$2" avail:"$7}')"
+RESTART_OK=false
 
 # --- 重启 paper (4002) ---
 if [ "$RESTART_PAPER" = true ]; then
@@ -72,7 +72,7 @@ if [ "$RESTART_PAPER" = true ]; then
     for i in $(seq 1 30); do
         sleep 2
         if ss -tlnp 2>/dev/null | grep -q ':4002'; then
-            echo "$(date '+%Y-%m-%d %H:%M:%S') $LOG_TAG OK paper 4002 ready ($((i*2))s)"; break
+            echo "$(date '+%Y-%m-%d %H:%M:%S') $LOG_TAG OK paper 4002 ready ($((i*2))s)"; RESTART_OK=true; break
         fi
     done
 fi
@@ -101,9 +101,14 @@ if [ "$RESTART_LIVE" = true ]; then
     for i in $(seq 1 30); do
         sleep 2
         if ss -tlnp 2>/dev/null | grep -q ':4001'; then
-            echo "$(date '+%Y-%m-%d %H:%M:%S') $LOG_TAG OK live 4001 ready ($((i*2))s)"; break
+            echo "$(date '+%Y-%m-%d %H:%M:%S') $LOG_TAG OK live 4001 ready ($((i*2))s)"; RESTART_OK=true; break
         fi
     done
+fi
+
+# 只在真正重启成功后递增计数
+if [ "$RESTART_OK" = true ]; then
+    echo "$((COUNT+1))" > "$RESTART_COUNT"
 fi
 
 # 重置熔断器
