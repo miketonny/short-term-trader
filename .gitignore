@@ -4,3 +4,4 @@ fail_count.json
 __pycache__/
 .hermes/
 .env
+*.bak.*

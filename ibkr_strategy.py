@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-import asyncio; asyncio.set_event_loop(asyncio.new_event_loop())
+import asyncio
+import argparse; asyncio.set_event_loop(asyncio.new_event_loop())
 """
 V1: 多品种并行 ETF 短线策略 + 看板数据输出
 每个 ETF 独立追踪持仓、独立买卖、独立确认成交。
@@ -51,7 +52,10 @@ _circuit = CircuitBreaker(
 )
 
 # ── 读取策略配置（Dashboard 可编辑）──
-CONFIG_FILE = os.path.expanduser("~/ibkr_dashboard/strategy_config.json")  # may be overridden from config
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--config", default=os.path.expanduser("~/ibkr_dashboard/strategy_config.json"))
+_args, _ = _parser.parse_known_args()
+CONFIG_FILE = os.path.expanduser(_args.config)
 def load_config():
     """从 strategy_config.json 加载参数，覆盖默认值"""
     try:
@@ -316,7 +320,7 @@ async def run():
     IB_PORT = _cfg.get("ib_port", IB_PORT)
     DASHBOARD_DIR = os.path.expanduser(_cfg.get("dashboard_dir", "~/ibkr_dashboard"))
     os.makedirs(DASHBOARD_DIR, exist_ok=True)
-    CONFIG_FILE = os.path.join(DASHBOARD_DIR, "strategy_config.json")
+    # CONFIG_FILE already set from --config CLI at module load
     # ── 同步熔断器 persist_path（模块加载时用旧 DASHBOARD_DIR）──
     _circuit.persist_path = os.path.join(DASHBOARD_DIR, "circuit_state.json")
 
@@ -380,6 +384,11 @@ async def run():
             _circuit.mark_notified()
         if _circuit.is_blocked:
             print("⛔ 熔断触发，暂停自动交易。")
+        try:
+            if ib.isConnected():
+                ib.disconnect()
+        except Exception:
+            pass
         return
 
     # ── 获取账户净值和当前持仓 ──
