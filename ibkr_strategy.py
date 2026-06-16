@@ -19,6 +19,14 @@ from tg_notify import send as tg
 from data_cache import DataCache, get_cache
 from rate_limiter import get_twelve_data_limiter, random_ua
 from notifier import notify_trade, notify_error, notify_stop_loss
+# Advisor client (shadow-only, never blocks trading)
+try:
+    from advisor_client import call_advisor, log_advisor_call, build_entry_context
+except ImportError:
+    call_advisor = lambda *a, **kw: None
+    log_advisor_call = lambda *a, **kw: None
+    build_entry_context = lambda *a, **kw: {}
+
 
 # ============ 配置 ============
 TWELVE_DATA_KEY = "a3377a4097ee4b2fba8a646a6dd898ab"
@@ -569,6 +577,13 @@ async def run():
                     if all_ok:
                         if nlv and nlv > 0:
                             qty = round((nlv * POSITION_ALLOC * LEVERAGE) / price, 3)  # fractional shares
+                            # Advisor evaluate entry (fire-and-forget)
+                            entry_ctx = build_entry_context(
+                                sym, now.isoformat(), price, rsi, sma, upper, lower,
+                                adx, sl, ml, nlv, qty, mode, checks, session_trades,
+                            )
+                            advice = await call_advisor("/evaluate_entry", entry_ctx, timeout=5.0)
+                            log_advisor_call("entry", sym, "BUY", entry_ctx, advice)
                             print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
                             has_open_order = any(t.contract.symbol == sym for t in ib.openTrades())
                             if has_open_order:
@@ -602,6 +617,13 @@ async def run():
                     if all_ok:
                         if nlv and nlv > 0:
                             qty = round((nlv * POSITION_ALLOC * LEVERAGE) / price, 3)  # fractional shares
+                            # Advisor evaluate entry (fire-and-forget)
+                            entry_ctx = build_entry_context(
+                                sym, now.isoformat(), price, rsi, sma, upper, lower,
+                                adx, sl, ml, nlv, qty, mode, checks, session_trades,
+                            )
+                            advice = await call_advisor("/evaluate_entry", entry_ctx, timeout=5.0)
+                            log_advisor_call("entry", sym, "BUY", entry_ctx, advice)
                             print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
                             has_open_order = any(t.contract.symbol == sym for t in ib.openTrades())
                             if has_open_order:
