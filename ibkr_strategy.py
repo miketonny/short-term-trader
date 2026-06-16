@@ -361,7 +361,19 @@ async def run():
             "market_status": "blocked", "market_text": f"⛔ 已熔断 ({remaining}s剩余)",
             "market_et": _circuit.last_error or "",
         })
-        dashboard["advisor_history"] = dashboard.get("advisor_history", existing.get("advisor_history", []))
+        # Read advisor history from log (not from existing data.json which may be stale)
+        try:
+            _advisor_log = "/root/live_ibkr_dashboard/advisor_log.json"
+            _ah = []
+            if os.path.exists(_advisor_log):
+                for _line in open(_advisor_log):
+                    _line = _line.strip()
+                    if _line:
+                        try: _ah.append(json.loads(_line))
+                        except: pass
+            dashboard["advisor_history"] = _ah[-100:]
+        except Exception:
+            dashboard["advisor_history"] = []
         dashboard.setdefault("news", [])
         dashboard.setdefault("symbols", {})
         dashboard.setdefault("positions", {})
@@ -384,7 +396,19 @@ async def run():
             "market_status": status_code, "market_text": status_text,
             "market_et": et_time,
         })
-        dashboard["advisor_history"] = dashboard.get("advisor_history", existing.get("advisor_history", []))
+        # Read advisor history from log (not from existing data.json which may be stale)
+        try:
+            _advisor_log = "/root/live_ibkr_dashboard/advisor_log.json"
+            _ah = []
+            if os.path.exists(_advisor_log):
+                for _line in open(_advisor_log):
+                    _line = _line.strip()
+                    if _line:
+                        try: _ah.append(json.loads(_line))
+                        except: pass
+            dashboard["advisor_history"] = _ah[-100:]
+        except Exception:
+            dashboard["advisor_history"] = []
         dashboard.setdefault("news", [])
         dashboard.setdefault("symbols", {})
         dashboard.setdefault("positions", {})
@@ -495,7 +519,19 @@ async def run():
             dashboard["news"] = existing.get("news", news)  # 优先用旧新闻
             dashboard["symbols_time"] = existing.get("symbols_time")  # 保留盘中快照时间
 
-            dashboard["advisor_history"] = existing.get("advisor_history", [])
+            # Read advisor history from log
+            try:
+                _advisor_log = "/root/live_ibkr_dashboard/advisor_log.json"
+                _ah = []
+                if os.path.exists(_advisor_log):
+                    for _line in open(_advisor_log):
+                        _line = _line.strip()
+                        if _line:
+                            try: _ah.append(json.loads(_line))
+                            except: pass
+                dashboard["advisor_history"] = _ah[-100:]
+            except Exception:
+                dashboard["advisor_history"] = []
             dashboard["session_stats"] = existing.get("session_stats", prev_stats)
             dashboard["trade_history"] = existing.get("trade_history", [])
             dashboard["last_buys"] = existing.get("last_buys", {})
