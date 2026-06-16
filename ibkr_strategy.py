@@ -10,7 +10,7 @@ Twelve Data OHLCV → numpy 本地计算 6 指标 → ib_insync 下单 → 订�
 import requests, asyncio, json, os, sys, time
 import numpy as np
 from datetime import datetime, timezone, timedelta
-from ib_insync import IB, Stock, MarketOrder
+from ib_insync import IB, Stock, MarketOrder, LimitOrder
 
 # ── 共用模块 ──
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -54,7 +54,9 @@ _circuit = CircuitBreaker(
 # ── 读取策略配置（Dashboard 可编辑）──
 _parser = argparse.ArgumentParser(add_help=False)
 _parser.add_argument("--config", default=os.path.expanduser("~/ibkr_dashboard/strategy_config.json"))
+_parser.add_argument("--mode", default="intraday", choices=["intraday", "swing"])
 _args, _ = _parser.parse_known_args()
+MODE = _args.mode
 CONFIG_FILE = os.path.expanduser(_args.config)
 def load_config():
     """从 strategy_config.json 加载参数，覆盖默认值"""
@@ -83,7 +85,7 @@ MAX_RETRIES = _cfg.get("max_retries", MAX_RETRIES)
 _circuit.threshold = MAX_RETRIES  # 从配置同步
 
 # ============ 数据缓存 & 限流 ============
-_cache = get_cache()
+_cache = get_cache(cache_dir="/root/live_ibkr_dashboard/cache")
 _limiter = get_twelve_data_limiter()
 
 # ============ 市场时间 ============
@@ -280,37 +282,50 @@ def determine_mode(rsi, price, sma):
     return None
 
 # ============ 交易执行 ============
-async def place_and_confirm(ib, sym, action, quantity):
+async def place_and_confirm(ib, sym, action, quantity, price):
     """
     下单并等待成交。返回 (filled: bool, fill_price: float|None)
     """
     contract = Stock(sym, "SMART", "USD")
     await ib.qualifyContractsAsync(contract)
-    order = MarketOrder(action, quantity)
-    trade = ib.placeOrder(contract, order)
 
-    # 等待成交
-    deadline = time.time() + ORDER_TIMEOUT
-    while time.time() < deadline:
-        await asyncio.sleep(1)
+    # Swing mode after close: GTC limit order (survives overnight)
+    _, status_text, _, _ = get_market_info()
+    is_swing_closed = (MODE == "swing" and "after-close" in status_text)
+
+    if is_swing_closed:
+        limit_price = round(price * 1.01, 2) if action == "BUY" else round(price * 0.99, 2)
+        order = LimitOrder(action, quantity, limit_price)
+        order.tif = "GTC"
+        trade = ib.placeOrder(contract, order)
+        await asyncio.sleep(2)
         status = trade.orderStatus.status
-        if status == "Filled":
-            avg_price = trade.orderStatus.avgFillPrice
-            print(f"  ✅ {action} {sym} ×{quantity:.3f} @ ${avg_price:.2f}")
-            if action == "BUY":
-                tg(f"🔔 BUY {sym} {quantity:.3f} @ ${avg_price:.2f}")
-            else:
-                tg(f"💰 SELL {sym} {quantity:.3f} @ ${avg_price:.2f}")
-            return True, avg_price
-        if status in ("Cancelled", "Inactive", "Rejected"):
-            print(f"  ❌ {sym} 订单失败: {status}")
+        if status in ("Submitted", "PreSubmitted"):
+            print(f"  📝 GTC {action} {sym} ×{quantity} limit ${limit_price:.2f} (after-close)")
+            return True, limit_price
+        else:
+            print(f"  ❌ {sym} GTC failed: {status}")
             return False, None
+    else:
+        order = MarketOrder(action, quantity)
+        trade = ib.placeOrder(contract, order)
 
-    print(f"  ⏰ {sym} 订单超时 ({ORDER_TIMEOUT}s), 当前状态: {trade.orderStatus.status}")
-    ib.cancelOrder(order)
-    return False, None
+        deadline = time.time() + ORDER_TIMEOUT
+        while time.time() < deadline:
+            await asyncio.sleep(1)
+            status = trade.orderStatus.status
+            if status == "Filled":
+                avg_price = trade.orderStatus.avgFillPrice
+                print(f"  ✅ {action} {sym} ×{quantity:.3f} @ ${avg_price:.2f}")
+                return True, avg_price
+            if status in ("Cancelled", "Inactive", "Rejected"):
+                print(f"  ❌ {sym} order failed: {status}")
+                return False, None
 
-# ============ 主逻辑 ============
+        print(f"  ⏰ {sym} timeout ({ORDER_TIMEOUT}s), status: {trade.orderStatus.status}")
+        ib.cancelOrder(order)
+        return False, None
+
 async def run():
     global DASHBOARD_DIR, IB_PORT, CONFIG_FILE
     now = datetime.now()
@@ -469,6 +484,7 @@ async def run():
             dashboard["symbols"] = existing.get("symbols", {})
             dashboard["news"] = existing.get("news", news)  # 优先用旧新闻
             dashboard["symbols_time"] = existing.get("symbols_time")  # 保留盘中快照时间
+
             dashboard["session_stats"] = existing.get("session_stats", prev_stats)
             dashboard["trade_history"] = existing.get("trade_history", [])
             dashboard["last_buys"] = existing.get("last_buys", {})
@@ -554,7 +570,12 @@ async def run():
                         if nlv and nlv > 0:
                             qty = round((nlv * POSITION_ALLOC * LEVERAGE) / price, 3)  # fractional shares
                             print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
-                            filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty)
+                            has_open_order = any(t.contract.symbol == sym for t in ib.openTrades())
+                            if has_open_order:
+                                print(f"\n  \u23f3 {sym} \u5df2\u6709\u6302\u5355\uff0c\u8df3\u8fc7")
+                                filled, fill_price = False, None
+                            else:
+                                filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty, price)
                             if filled:
                                 prev_last_buys[sym] = now.isoformat()
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
@@ -582,7 +603,12 @@ async def run():
                         if nlv and nlv > 0:
                             qty = round((nlv * POSITION_ALLOC * LEVERAGE) / price, 3)  # fractional shares
                             print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
-                            filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty)
+                            has_open_order = any(t.contract.symbol == sym for t in ib.openTrades())
+                            if has_open_order:
+                                print(f"\n  \u23f3 {sym} \u5df2\u6709\u6302\u5355\uff0c\u8df3\u8fc7")
+                                filled, fill_price = False, None
+                            else:
+                                filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty, price)
                             if filled:
                                 prev_last_buys[sym] = now.isoformat()
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
@@ -612,8 +638,7 @@ async def run():
                 # ── 硬止损（无条件）──
                 if price <= stop_price:
                     print(f"  🛑 STOP LOSS {sym}: ${price:.2f} ≤ ${stop_price:.2f} (-{STOP_LOSS_PCT*100:.0f}%)")
-                    tg(f"🛑 STOP LOSS {sym} {pos['qty']}股 @ ${price:.2f}")
-                    filled, fill_price = await place_and_confirm(ib, sym, "SELL", pos["qty"])
+                    filled, fill_price = await place_and_confirm(ib, sym, "SELL", pos["qty"], price)
                     if filled:
                         prev_last_sells[sym] = now.isoformat()
                         pnl = (fill_price - pos["avg_cost"]) * pos["qty"]
@@ -639,12 +664,12 @@ async def run():
                             sell_triggers = []
                         else:
                             print(f"  🔔 SELL {sym}: {sell_triggers}")
-                            filled, fill_price = await place_and_confirm(ib, sym, "SELL", pos["qty"])
+                            filled, fill_price = await place_and_confirm(ib, sym, "SELL", pos["qty"], price)
                             if filled:
                                 prev_last_sells[sym] = now.isoformat()
                                 pnl = (fill_price - pos["avg_cost"]) * pos["qty"]
                                 session_trades.append({"sym": sym, "action": "SELL", "reason": "technical", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
-                                notify_trade(sym, "SELL", price, pos["qty"], reason=",".join(sell_triggers))
+                                notify_trade(sym, "SELL", fill_price, pos["qty"], reason=",".join(sell_triggers))
                                 positions[sym] = None
                     elif not in_cooldown:
                         print(f"  持有中 (成本 ${entry_price:.2f}, 止损 ${stop_price:.2f})")
@@ -687,6 +712,19 @@ async def run():
         dashboard["last_sells"] = last_sells_out
         dashboard["last_buys"] = prev_last_buys
         dashboard["symbols_time"] = now.strftime("%H:%M:%S")  # 记录盘中快照时间
+
+        # Advisor tail merge (read-only from log, does not block trading)
+        try:
+            advisor_log_path = "/root/live_ibkr_dashboard/advisor_log.json"
+            advisor_history = []
+            if os.path.exists(advisor_log_path):
+                all_lines = [l.strip() for l in open(advisor_log_path) if l.strip()]
+                for line in all_lines[-100:]:
+                    try: advisor_history.append(json.loads(line))
+                    except: pass
+            dashboard["advisor_history"] = advisor_history
+        except Exception:
+            dashboard["advisor_history"] = []
 
     with open(f"{DASHBOARD_DIR}/data.json", "w") as f:
         json.dump(dashboard, f)
