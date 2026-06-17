@@ -624,7 +624,7 @@ async def run():
                             pass
                     if all_ok:
                         if nlv and nlv > 0:
-                            qty = round((nlv * POSITION_ALLOC * LEVERAGE) / price, 3)  # fractional shares
+                            qty = max(1, int((nlv * POSITION_ALLOC * LEVERAGE) / price))  # integer shares for IBKR API
                             # Advisor evaluate entry (fire-and-forget)
                             entry_ctx = build_entry_context(
                                 sym, now.isoformat(), price, rsi, sma, upper, lower,
@@ -637,7 +637,7 @@ async def run():
                             if pos_count_buy >= MAX_POSITIONS:
                                 print(f"\\n  ⏳ {sym} 持仓上限 {pos_count_buy}/{MAX_POSITIONS}，跳过买入")
                                 continue
-                            print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
+                            print(f"\n  🟢 BUY [{mode}] {sym} = {qty}股")
                             has_open_order = any(t.contract.symbol == sym for t in ib.openTrades())
                             if has_open_order:
                                 print(f"\n  \u23f3 {sym} \u5df2\u6709\u6302\u5355\uff0c\u8df3\u8fc7")
@@ -669,7 +669,7 @@ async def run():
                             pass
                     if all_ok:
                         if nlv and nlv > 0:
-                            qty = round((nlv * POSITION_ALLOC * LEVERAGE) / price, 3)  # fractional shares
+                            qty = max(1, int((nlv * POSITION_ALLOC * LEVERAGE) / price))  # integer shares for IBKR API
                             # Advisor evaluate entry (fire-and-forget)
                             entry_ctx = build_entry_context(
                                 sym, now.isoformat(), price, rsi, sma, upper, lower,
@@ -682,7 +682,7 @@ async def run():
                             if pos_count_buy >= MAX_POSITIONS:
                                 print(f"\\n  ⏳ {sym} 持仓上限 {pos_count_buy}/{MAX_POSITIONS}，跳过买入")
                                 continue
-                            print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
+                            print(f"\n  🟢 BUY [{mode}] {sym} = {qty}股")
                             has_open_order = any(t.contract.symbol == sym for t in ib.openTrades())
                             if has_open_order:
                                 print(f"\n  \u23f3 {sym} \u5df2\u6709\u6302\u5355\uff0c\u8df3\u8fc7")
