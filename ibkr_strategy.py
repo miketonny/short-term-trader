@@ -63,8 +63,10 @@ _circuit = CircuitBreaker(
 _parser = argparse.ArgumentParser(add_help=False)
 _parser.add_argument("--config", default=os.path.expanduser("~/ibkr_dashboard/strategy_config.json"))
 _parser.add_argument("--mode", default="intraday", choices=["intraday", "swing"])
+_parser.add_argument("--validate", action="store_true", help="Validate config, imports, and function signatures without trading")
 _args, _ = _parser.parse_known_args()
 MODE = _args.mode
+VALIDATE = _args.validate
 CONFIG_FILE = os.path.expanduser(_args.config)
 def load_config():
     """从 strategy_config.json 加载参数，覆盖默认值"""
@@ -793,6 +795,10 @@ async def run():
     print(f"  看板已更新 | 市场: {status_text} | 持仓: {pos_count}/{len(SYMBOLS)} | 新闻: {len(news)}条")
 
 if __name__ == "__main__":
-    print(f"=== Multi-ETF V1 | {datetime.now().strftime('%H:%M:%S')} ===")
-    asyncio.run(run())
-    print("=== Done ===\n")
+    if VALIDATE:
+        from validate import run_validate
+        run_validate()
+    else:
+        print(f"=== Multi-ETF V1 | {datetime.now().strftime('%H:%M:%S')} ===")
+        asyncio.run(run())
+        print("=== Done ===\n")
