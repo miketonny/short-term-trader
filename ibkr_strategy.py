@@ -290,7 +290,7 @@ def determine_mode(rsi, price, sma):
     return None
 
 # ============ 交易执行 ============
-async def place_and_confirm(ib, sym, action, quantity, price):
+async def place_and_confirm(ib, sym, action, quantity, price, mode=None):
     """
     下单并等待成交。返回 (filled: bool, fill_price: float|None)
     """
@@ -299,7 +299,7 @@ async def place_and_confirm(ib, sym, action, quantity, price):
 
     # Swing mode after close: GTC limit order (survives overnight)
     _, status_text, _, _ = get_market_info()
-    is_swing_closed = (MODE == "swing" and "after-close" in status_text)
+    is_swing_closed = (mode == "swing" and "after-close" in status_text)
 
     if is_swing_closed:
         limit_price = round(price * 1.01, 2) if action == "BUY" else round(price * 0.99, 2)
@@ -629,7 +629,7 @@ async def run():
                                 print(f"\n  \u23f3 {sym} \u5df2\u6709\u6302\u5355\uff0c\u8df3\u8fc7")
                                 filled, fill_price = False, None
                             else:
-                                filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty, price)
+                                filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty, price, mode=MODE)
                             if filled:
                                 prev_last_buys[sym] = now.isoformat()
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
@@ -669,7 +669,7 @@ async def run():
                                 print(f"\n  \u23f3 {sym} \u5df2\u6709\u6302\u5355\uff0c\u8df3\u8fc7")
                                 filled, fill_price = False, None
                             else:
-                                filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty, price)
+                                filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty, price, mode=MODE)
                             if filled:
                                 prev_last_buys[sym] = now.isoformat()
                                 positions[sym] = {"qty": qty, "avg_cost": fill_price, "entry_time": now.isoformat(), "mode": mode}
@@ -699,7 +699,7 @@ async def run():
                 # ── 硬止损（无条件）──
                 if price <= stop_price:
                     print(f"  🛑 STOP LOSS {sym}: ${price:.2f} ≤ ${stop_price:.2f} (-{STOP_LOSS_PCT*100:.0f}%)")
-                    filled, fill_price = await place_and_confirm(ib, sym, "SELL", pos["qty"], price)
+                    filled, fill_price = await place_and_confirm(ib, sym, "SELL", pos["qty"], price, mode=MODE)
                     if filled:
                         prev_last_sells[sym] = now.isoformat()
                         pnl = (fill_price - pos["avg_cost"]) * pos["qty"]
@@ -725,7 +725,7 @@ async def run():
                             sell_triggers = []
                         else:
                             print(f"  🔔 SELL {sym}: {sell_triggers}")
-                            filled, fill_price = await place_and_confirm(ib, sym, "SELL", pos["qty"], price)
+                            filled, fill_price = await place_and_confirm(ib, sym, "SELL", pos["qty"], price, mode=MODE)
                             if filled:
                                 prev_last_sells[sym] = now.isoformat()
                                 pnl = (fill_price - pos["avg_cost"]) * pos["qty"]
