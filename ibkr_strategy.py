@@ -92,6 +92,8 @@ COOLDOWN_MINUTES = _cfg.get("cooldown_minutes", COOLDOWN_MINUTES)
 REENTRY_COOLDOWN_MINUTES = _cfg.get("reentry_cooldown_minutes", 15)
 MACD_HIST_THRESHOLD = _cfg.get("macd_hist_threshold", 0.05)
 MAX_RETRIES = _cfg.get("max_retries", MAX_RETRIES)
+MAX_POSITIONS = _cfg.get("max_positions", 3)
+TRADING_ENABLED = _cfg.get("trading_enabled", True)
 _circuit.threshold = MAX_RETRIES  # 从配置同步
 
 # ============ 数据缓存 & 限流 ============
@@ -421,6 +423,11 @@ async def run():
             json.dump(dashboard, f)
         return
 
+    # ── 交易开关（紧急停止）──
+    if not TRADING_ENABLED:
+        print("🛑 交易已禁用（trading_enabled=false），跳过本轮")
+        return
+
     # ── 连接 IB ──
     ib = IB()
     try:
@@ -625,6 +632,11 @@ async def run():
                             )
                             advice = await call_advisor("/evaluate_entry", entry_ctx, timeout=5.0)
                             log_advisor_call("entry", sym, "BUY", entry_ctx, advice)
+                            # ── 持仓上限检查 ──
+                            pos_count_buy = sum(1 for p in positions.values() if p is not None)
+                            if pos_count_buy >= MAX_POSITIONS:
+                                print(f"\\n  ⏳ {sym} 持仓上限 {pos_count_buy}/{MAX_POSITIONS}，跳过买入")
+                                continue
                             print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
                             has_open_order = any(t.contract.symbol == sym for t in ib.openTrades())
                             if has_open_order:
@@ -665,6 +677,11 @@ async def run():
                             )
                             advice = await call_advisor("/evaluate_entry", entry_ctx, timeout=5.0)
                             log_advisor_call("entry", sym, "BUY", entry_ctx, advice)
+                            # ── 持仓上限检查 ──
+                            pos_count_buy = sum(1 for p in positions.values() if p is not None)
+                            if pos_count_buy >= MAX_POSITIONS:
+                                print(f"\\n  ⏳ {sym} 持仓上限 {pos_count_buy}/{MAX_POSITIONS}，跳过买入")
+                                continue
                             print(f"\n  🟢 BUY [{mode}] {sym} = {qty:.3f}股")
                             has_open_order = any(t.contract.symbol == sym for t in ib.openTrades())
                             if has_open_order:
