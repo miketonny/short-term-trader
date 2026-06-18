@@ -1,7 +1,9 @@
-data.json
-fail_count.json
-*.pyc
-__pycache__/
-.hermes/
 .env
-*.bak.*
+*.key
+*.pem
+*.swp
+*~
+.DS_Store
+__pycache__/
+*.pyc
+circuit_state.json
