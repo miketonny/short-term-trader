@@ -178,13 +178,6 @@ def fetch_candles(symbol):
     _cache.put(cache_key, result, ttl=ttl)
     return result, closes[-1]
 
-def get_price(symbol):
-    resp = requests.get("https://api.twelvedata.com/price", params={
-        "symbol": symbol, "apikey": TWELVE_DATA_KEY
-    }, timeout=10)
-    data = resp.json()
-    return float(data["price"]) if "price" in data else None
-
 # ============ 指标计算 ============
 def calc_rsi(closes, period=14):
     if len(closes) < period + 1:
