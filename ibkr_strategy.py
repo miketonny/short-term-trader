@@ -98,7 +98,7 @@ MACD_HIST_THRESHOLD = _cfg.get("macd_hist_threshold", 0.05)
 MAX_RETRIES = _cfg.get("max_retries", MAX_RETRIES)
 MAX_POSITIONS = _cfg.get("max_positions", 3)
 _trading_raw = _cfg.get("trading_enabled", True)
-TRADING_ENABLED = _trading_raw if isinstance(_trading_raw, bool) else str(_trading_raw).lower() == "true"
+TRADING_ENABLED = _trading_raw if isinstance(_trading_raw, bool) else bool(_trading_raw) if isinstance(_trading_raw, (int, float)) else str(_trading_raw).lower() == "true"
 _circuit.threshold = MAX_RETRIES  # 从配置同步
 
 # ============ 数据缓存 & 限流 ============
