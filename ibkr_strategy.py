@@ -95,6 +95,7 @@ STOP_LOSS_PCT = _cfg.get("stop_loss_pct", STOP_LOSS_PCT)
 COOLDOWN_MINUTES = _cfg.get("cooldown_minutes", COOLDOWN_MINUTES)
 REENTRY_COOLDOWN_MINUTES = _cfg.get("reentry_cooldown_minutes", 15)
 MACD_HIST_THRESHOLD = _cfg.get("macd_hist_threshold", 0.05)
+PDT_PROTECT = _cfg.get("pdt_protect", True)  # PDT同日保护
 MAX_RETRIES = _cfg.get("max_retries", MAX_RETRIES)
 MAX_POSITIONS = _cfg.get("max_positions", 3)
 _trading_raw = _cfg.get("trading_enabled", True)
@@ -319,6 +320,7 @@ async def place_and_confirm(ib, sym, action, quantity, price, mode=None):
             return False, None
     else:
         order = MarketOrder(action, quantity)
+        order.tif = 'DAY'  # prevent Error 10349 cancel-and-replace
         trade = ib.placeOrder(contract, order)
 
         deadline = time.time() + ORDER_TIMEOUT
@@ -330,6 +332,11 @@ async def place_and_confirm(ib, sym, action, quantity, price, mode=None):
                 print(f"  ✅ {action} {sym} ×{quantity:.3f} @ ${avg_price:.2f}")
                 return True, avg_price
             if status in ("Cancelled", "Inactive", "Rejected"):
+                filled_qty = trade.orderStatus.filled
+                if filled_qty and filled_qty > 0:
+                    avg_price = trade.orderStatus.avgFillPrice or price
+                    print(f"  ⚠️ {sym} status={status} but filled={filled_qty}, treating as filled @ ${avg_price:.2f}")
+                    return True, avg_price
                 print(f"  ❌ {sym} order failed: {status}")
                 return False, None
 
@@ -499,6 +506,9 @@ async def run():
             }
             if p.contract.symbol in prev_entry_times:
                 entry["entry_time"] = prev_entry_times[p.contract.symbol]
+            else:
+                entry["entry_time"] = now.isoformat()
+                print(f"  WARN {p.contract.symbol} position without entry_time, set to now")
             if p.contract.symbol in prev_entry_modes:
                 entry["mode"] = prev_entry_modes[p.contract.symbol]
             positions[p.contract.symbol] = entry
@@ -608,7 +618,7 @@ async def run():
             # ── 无持仓：判断应该用哪种模式 ──
             if pos is None:
                 if in_reentry:
-                    print(f"${price:.2f} RSI={rsi:.1f} ⏳卖出冷却中")
+                    print(f"${price:.2f} RSI={rsi:.1f} ⏳重入冷却")
                     continue
                 mode = determine_mode(rsi, price, sma)
 
@@ -736,13 +746,30 @@ async def run():
                 entry_time_str = pos.get("entry_time")
                 stop_price = entry_price * (1 - STOP_LOSS_PCT)
 
-                # 根据入场模式选择卖出检查函数
-                if entry_mode == "trend":
-                    sell_triggers = check_sell_trend(rsi, price, sma, ml, sl, hist)
-                else:
-                    sell_triggers = check_sell(rsi, price, upper, ml, sl, hist)
+                # ── PDT同日保护（提前检查，避免生成无效卖出信号）──
+                pdt_blocked = False
+                if PDT_PROTECT and entry_time_str:
+                    try:
+                        sydney_tz = ZoneInfo("Australia/Sydney")
+                        ny_tz = ZoneInfo("America/New_York")
+                        utc_now = datetime.now(timezone.utc)
+                        et_now = utc_now.astimezone(ny_tz)
+                        entry_dt_et = datetime.fromisoformat(entry_time_str).replace(tzinfo=sydney_tz).astimezone(ny_tz)
+                        if entry_dt_et.date() == et_now.date():
+                            pdt_blocked = True
+                    except Exception as e:
+                        print(f"  [WARN] PDT check failed: {e}")
 
-                print(f"${price:.2f} RSI={rsi:.1f} [{entry_mode or '?'}]" + (" ⚡卖出!" if sell_triggers else ""))
+                if pdt_blocked:
+                    print(f"${price:.2f} RSI={rsi:.1f} [{entry_mode or '?'}] 🔒 PDT保护")
+                    sell_triggers = []
+                else:
+                    # 根据入场模式选择卖出检查函数
+                    if entry_mode == "trend":
+                        sell_triggers = check_sell_trend(rsi, price, sma, ml, sl, hist)
+                    else:
+                        sell_triggers = check_sell(rsi, price, upper, ml, sl, hist)
+                    print(f"${price:.2f} RSI={rsi:.1f} [{entry_mode or '?'}]" + (" ⚡卖出!" if sell_triggers else ""))
 
                 # ── 硬止损（无条件）──
                 if l[-1] <= stop_price:  # use candle low, not close
@@ -772,7 +799,7 @@ async def run():
                             print(f"  ⏳ {sym} 保护期内 (还需 {remain_sec:.0f}s)，跳过: {sell_triggers}")
                             sell_triggers = []
                         else:
-                            print(f"  🔔 SELL {sym}: {sell_triggers}")
+                            print(f"  SELL {sym}: {sell_triggers}")
                             filled, fill_price = await place_and_confirm(ib, sym, "SELL", pos["qty"], price, mode=MODE)
                             if filled:
                                 prev_last_sells[sym] = now.isoformat()
@@ -781,7 +808,7 @@ async def run():
                                 notify_trade(sym, "SELL", fill_price, pos["qty"], reason=",".join(sell_triggers))
                                 positions[sym] = None
                     elif not in_cooldown:
-                        print(f"  持有中 (成本 ${entry_price:.2f}, 止损 ${stop_price:.2f})")
+                            print(f"  持有中 (成本 ${entry_price:.2f}, 止损 ${stop_price:.2f})")
                     else:
                         remain_sec = COOLDOWN_MINUTES * 60 - elapsed
                         print(f"  持有中 (保护期还剩 {remain_sec:.0f}s, 止损 ${stop_price:.2f})")
