@@ -95,7 +95,7 @@ STOP_LOSS_PCT = _cfg.get("stop_loss_pct", STOP_LOSS_PCT)
 COOLDOWN_MINUTES = _cfg.get("cooldown_minutes", COOLDOWN_MINUTES)
 REENTRY_COOLDOWN_MINUTES = _cfg.get("reentry_cooldown_minutes", 15)
 MACD_HIST_THRESHOLD = _cfg.get("macd_hist_threshold", 0.05)
-PDT_PROTECT = _cfg.get("pdt_protect", True)  # PDT同日保护
+PDT_PROTECT = _cfg.get("pdt_protect", True)  # 24h持有保护
 MAX_RETRIES = _cfg.get("max_retries", MAX_RETRIES)
 MAX_POSITIONS = _cfg.get("max_positions", 3)
 _trading_raw = _cfg.get("trading_enabled", True)
@@ -748,17 +748,15 @@ async def run():
                 entry_time_str = pos.get("entry_time")
                 stop_price = entry_price * (1 - STOP_LOSS_PCT)
 
-                # ── PDT同日保护（提前检查，避免生成无效卖出信号）──
+                # ── 24h 持有保护：买入后 24 小时内禁止卖出 ──
                 pdt_blocked = False
                 if PDT_PROTECT and entry_time_str:
                     try:
-                        sydney_tz = ZoneInfo("Australia/Sydney")
-                        ny_tz = ZoneInfo("America/New_York")
-                        utc_now = datetime.now(timezone.utc)
-                        et_now = utc_now.astimezone(ny_tz)
-                        entry_dt_et = datetime.fromisoformat(entry_time_str).replace(tzinfo=sydney_tz).astimezone(ny_tz)
-                        if entry_dt_et.date() == et_now.date():
+                        entry_dt = datetime.fromisoformat(entry_time_str)
+                        hours_held = (now - entry_dt).total_seconds() / 3600
+                        if hours_held < 24:
                             pdt_blocked = True
+                            print(f"  🔒 {sym} 持有仅 {hours_held:.1f}h，需满24h才能卖出")
                     except Exception as e:
                         print(f"  [WARN] PDT check failed: {e}")
 
