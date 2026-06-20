@@ -511,6 +511,8 @@ async def run():
                 print(f"  WARN {p.contract.symbol} position without entry_time, set to now")
             if p.contract.symbol in prev_entry_modes:
                 entry["mode"] = prev_entry_modes[p.contract.symbol]
+            else:
+                entry["mode"] = "trend"  # default for unknown positions
             positions[p.contract.symbol] = entry
 
     # ── 市场状态 ──
