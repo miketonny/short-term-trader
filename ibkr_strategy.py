@@ -320,7 +320,7 @@ async def place_and_confirm(ib, sym, action, quantity, price, mode=None):
             return False, None
     else:
         order = MarketOrder(action, quantity)
-        # 不设 tif，避免与 IBKR order preset 冲突触发 Error 10349
+        order.tif = "DAY"
         trade = ib.placeOrder(contract, order)
 
         deadline = time.time() + ORDER_TIMEOUT
