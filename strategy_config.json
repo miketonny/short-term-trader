@@ -8,5 +8,7 @@
   "cooldown_minutes": 15,
   "position_alloc": 0.1,
   "macd_hist_threshold": 0.1,
-  "reentry_cooldown_minutes": 15
+  "reentry_cooldown_minutes": 15,
+  "pdt_protect": true,
+  "trend_filter_sma_period": 50
 }

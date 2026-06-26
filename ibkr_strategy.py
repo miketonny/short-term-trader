@@ -96,6 +96,7 @@ COOLDOWN_MINUTES = _cfg.get("cooldown_minutes", COOLDOWN_MINUTES)
 REENTRY_COOLDOWN_MINUTES = _cfg.get("reentry_cooldown_minutes", 15)
 MACD_HIST_THRESHOLD = _cfg.get("macd_hist_threshold", 0.05)
 PDT_PROTECT = _cfg.get("pdt_protect", True)  # 24h持有保护
+TREND_FILTER_SMA_PERIOD = _cfg.get("trend_filter_sma_period", 50)  # 0=禁用, SMA周期过滤下跌趋势
 MAX_RETRIES = _cfg.get("max_retries", MAX_RETRIES)
 MAX_POSITIONS = _cfg.get("max_positions", 3)
 _trading_raw = _cfg.get("trading_enabled", True)
@@ -595,6 +596,7 @@ async def run():
             upper, mid, lower = calc_bbands(c)
             adx = calc_adx(h, l, c)
             ml, sl, hist, ph = calc_macd(c)
+            sma_trend = calc_sma(c, TREND_FILTER_SMA_PERIOD) if TREND_FILTER_SMA_PERIOD > 0 else None  # ponytail: SMA趋势过滤器
 
             if None in (rsi, sma, upper, adx, ml):
                 print("指标计算不足")
@@ -621,6 +623,17 @@ async def run():
             if pos is None:
                 if in_reentry:
                     print(f"${price:.2f} RSI={rsi:.1f} ⏳重入冷却")
+                    continue
+                # ── 趋势过滤器：价格必须>SMA_N 才允许做多 ──
+                if TREND_FILTER_SMA_PERIOD > 0 and sma_trend is not None and price < sma_trend:
+                    print(f"${price:.2f} RSI={rsi:.1f} 🐻 价格<SMA{TREND_FILTER_SMA_PERIOD}(${sma_trend:.2f}) 下行趋势不买入")
+                    dashboard["symbols"][sym] = {
+                        "price": price, "rsi": round(rsi, 1), "sma": round(sma, 2),
+                        "bb_upper": round(upper, 2), "bb_lower": round(lower, 2),
+                        "adx": round(adx, 1), "macd_hist": round(hist, 4),
+                        "mode": "blocked", "checks": {}, "score": 0, "all_ok": False,
+                        "sell_triggers": []
+                    }
                     continue
                 mode = determine_mode(rsi, price, sma)
 
