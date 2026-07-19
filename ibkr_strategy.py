@@ -95,7 +95,7 @@ STOP_LOSS_PCT = _cfg.get("stop_loss_pct", STOP_LOSS_PCT)
 COOLDOWN_MINUTES = _cfg.get("cooldown_minutes", COOLDOWN_MINUTES)
 REENTRY_COOLDOWN_MINUTES = _cfg.get("reentry_cooldown_minutes", 15)
 MACD_HIST_THRESHOLD = _cfg.get("macd_hist_threshold", 0.05)
-PDT_PROTECT = _cfg.get("pdt_protect", True)  # 24h持有保护
+MIN_HOLD_24H = _cfg.get("min_hold_24h", True)  # 24h最短持仓
 TREND_FILTER_SMA_PERIOD = _cfg.get("trend_filter_sma_period", 50)  # 0=禁用, SMA周期过滤下跌趋势
 MAX_RETRIES = _cfg.get("max_retries", MAX_RETRIES)
 MAX_POSITIONS = _cfg.get("max_positions", 3)
@@ -341,6 +341,11 @@ async def place_and_confirm(ib, sym, action, quantity, price, mode=None):
                 print(f"  ❌ {sym} order failed: {status}")
                 return False, None
 
+        filled_qty = trade.orderStatus.filled
+        if filled_qty and filled_qty > 0:
+            avg_price = trade.orderStatus.avgFillPrice or price
+            print(f"  ⚠️ {sym} timeout but filled={filled_qty}, treating as filled @ ${avg_price:.2f}")
+            return True, avg_price
         print(f"  ⏰ {sym} timeout ({ORDER_TIMEOUT}s), status: {trade.orderStatus.status}")
         ib.cancelOrder(order)
         return False, None
@@ -382,7 +387,7 @@ async def run():
                     _line = _line.strip()
                     if _line:
                         try: _ah.append(json.loads(_line))
-                        except: pass
+                        except json.JSONDecodeError: pass
             dashboard["advisor_history"] = _ah[-100:]
         except Exception:
             dashboard["advisor_history"] = []
@@ -396,7 +401,8 @@ async def run():
 
     # ── 市场时段检测（在IB连接之前，避免非交易时段累积熔断计数）──
     status_code, status_text, et_time, should_trade_early = get_market_info()
-    if not should_trade_early:
+    swing_after_close = (MODE == "swing" and status_code == "closed")  # swing 模式收盘后下 GTC 单
+    if not should_trade_early and not swing_after_close:
         print(f"  非交易时段 ({status_text})，跳过连接")
         try:
             with open(f"{DASHBOARD_DIR}/data.json") as f:
@@ -418,7 +424,7 @@ async def run():
                     _line = _line.strip()
                     if _line:
                         try: _ah.append(json.loads(_line))
-                        except: pass
+                        except json.JSONDecodeError: pass
             dashboard["advisor_history"] = _ah[-100:]
         except Exception:
             dashboard["advisor_history"] = []
@@ -534,7 +540,7 @@ async def run():
     }
 
     # ── 非交易时段：只更新时间和市场状态，保留盘中最后一轮信号数据 ──
-    if not should_trade:
+    if not should_trade and not swing_after_close:
         # 读取现有 data.json，保留 symbols + positions + news
         try:
             with open(f"{DASHBOARD_DIR}/data.json") as f:
@@ -552,7 +558,7 @@ async def run():
                         _line = _line.strip()
                         if _line:
                             try: _ah.append(json.loads(_line))
-                            except: pass
+                            except json.JSONDecodeError: pass
                 dashboard["advisor_history"] = _ah[-100:]
             except Exception:
                 dashboard["advisor_history"] = []
@@ -582,6 +588,7 @@ async def run():
             candles, _ = fetch_candles(sym)
             if candles is None:
                 print("数据获取失败")
+                dashboard["symbols"][sym] = {"mode": "no_data", "checks": {}, "score": 0, "all_ok": False, "sell_triggers": []}
                 continue
 
             # 用 K线收盘价替代 get_price 调用（省 API 额度）
@@ -600,6 +607,7 @@ async def run():
 
             if None in (rsi, sma, upper, adx, ml):
                 print("指标计算不足")
+                dashboard["symbols"][sym] = {"price": price, "mode": "insufficient_data", "checks": {}, "score": 0, "all_ok": False, "sell_triggers": []}
                 continue
 
             pos = positions.get(sym)
@@ -616,13 +624,20 @@ async def run():
                 try:
                     last_sell_dt = datetime.fromisoformat(last_sell_str)
                     in_reentry = (now - last_sell_dt).total_seconds() < REENTRY_COOLDOWN_MINUTES * 60
-                except:
+                except (ValueError, TypeError):
                     pass
 
             # ── 无持仓：判断应该用哪种模式 ──
             if pos is None:
                 if in_reentry:
                     print(f"${price:.2f} RSI={rsi:.1f} ⏳重入冷却")
+                    dashboard["symbols"][sym] = {
+                        "price": price, "rsi": round(rsi, 1), "sma": round(sma, 2),
+                        "bb_upper": round(upper, 2), "bb_lower": round(lower, 2),
+                        "adx": round(adx, 1), "macd_hist": round(hist, 4),
+                        "mode": "cooldown", "checks": {}, "score": 0, "all_ok": False,
+                        "sell_triggers": []
+                    }
                     continue
                 # ── 趋势过滤器：价格必须>SMA_N 才允许做多 ──
                 if TREND_FILTER_SMA_PERIOD > 0 and sma_trend is not None and price < sma_trend:
@@ -648,24 +663,24 @@ async def run():
                             if (now - last_buy).total_seconds() < COOLDOWN_MINUTES * 60:
                                 print(f"\n  ⏳ 买入冷却 {int(COOLDOWN_MINUTES - (now-last_buy).total_seconds()/60)}min")
                                 all_ok = False
-                        except:
+                        except (ValueError, TypeError):
                             pass
                     if all_ok:
                         if nlv and nlv > 0:
                             qty = max(1, int((nlv * POSITION_ALLOC * LEVERAGE) / price))  # integer shares for IBKR API
-                            # Advisor evaluate entry (fire-and-forget)
-                            entry_ctx = build_entry_context(
-                                sym, now.isoformat(), price, rsi, sma, upper, lower,
-                                adx, sl, ml, nlv, qty, mode, checks, session_trades,
-                            )
-                            advice = await call_advisor("/evaluate_entry", entry_ctx, timeout=5.0)
-                            log_advisor_call("entry", sym, "BUY", entry_ctx, advice)
-                            # ── 持仓上限检查 ──
+                            # ── 持仓上限检查（先于 advisor，避免被拦截信号刷日志）──
                             pos_count_buy = sum(1 for p in positions.values() if p is not None)
                             _skip = pos_count_buy >= MAX_POSITIONS
                             if _skip:
-                                print(f"\\n  ⏳ {sym} 持仓上限 {pos_count_buy}/{MAX_POSITIONS}，跳过买入")
+                                print(f"\n  ⏳ {sym} 持仓上限 {pos_count_buy}/{MAX_POSITIONS}，跳过买入")
                             if not _skip:
+                                # Advisor evaluate entry (fire-and-forget)
+                                entry_ctx = build_entry_context(
+                                    sym, now.isoformat(), price, rsi, sma, upper, lower,
+                                    adx, sl, ml, nlv, qty, mode, checks, session_trades,
+                                )
+                                advice = await call_advisor("/evaluate_entry", entry_ctx, timeout=15.0)
+                                log_advisor_call("entry", sym, "BUY", entry_ctx, advice)
                                 print(f"\n  🟢 BUY [{mode}] {sym} = {qty}股")
 
                                 has_open_order = any(t.contract.symbol == sym for t in ib.openTrades())
@@ -706,24 +721,24 @@ async def run():
                             if (now - last_buy).total_seconds() < COOLDOWN_MINUTES * 60:
                                 print(f"\n  ⏳ 买入冷却 {int(COOLDOWN_MINUTES - (now-last_buy).total_seconds()/60)}min")
                                 all_ok = False
-                        except:
+                        except (ValueError, TypeError):
                             pass
                     if all_ok:
                         if nlv and nlv > 0:
                             qty = max(1, int((nlv * POSITION_ALLOC * LEVERAGE) / price))  # integer shares for IBKR API
-                            # Advisor evaluate entry (fire-and-forget)
-                            entry_ctx = build_entry_context(
-                                sym, now.isoformat(), price, rsi, sma, upper, lower,
-                                adx, sl, ml, nlv, qty, mode, checks, session_trades,
-                            )
-                            advice = await call_advisor("/evaluate_entry", entry_ctx, timeout=5.0)
-                            log_advisor_call("entry", sym, "BUY", entry_ctx, advice)
-                            # ── 持仓上限检查 ──
+                            # ── 持仓上限检查（先于 advisor，避免被拦截信号刷日志）──
                             pos_count_buy = sum(1 for p in positions.values() if p is not None)
                             _skip = pos_count_buy >= MAX_POSITIONS
                             if _skip:
-                                print(f"\\n  ⏳ {sym} 持仓上限 {pos_count_buy}/{MAX_POSITIONS}，跳过买入")
+                                print(f"\n  ⏳ {sym} 持仓上限 {pos_count_buy}/{MAX_POSITIONS}，跳过买入")
                             if not _skip:
+                                # Advisor evaluate entry (fire-and-forget)
+                                entry_ctx = build_entry_context(
+                                    sym, now.isoformat(), price, rsi, sma, upper, lower,
+                                    adx, sl, ml, nlv, qty, mode, checks, session_trades,
+                                )
+                                advice = await call_advisor("/evaluate_entry", entry_ctx, timeout=15.0)
+                                log_advisor_call("entry", sym, "BUY", entry_ctx, advice)
                                 print(f"\n  🟢 BUY [{mode}] {sym} = {qty}股")
 
                                 has_open_order = any(t.contract.symbol == sym for t in ib.openTrades())
@@ -762,19 +777,19 @@ async def run():
                 stop_price = entry_price * (1 - STOP_LOSS_PCT)
 
                 # ── 24h 持有保护：买入后 24 小时内禁止卖出 ──
-                pdt_blocked = False
-                if PDT_PROTECT and entry_time_str:
+                hold_blocked = False
+                if MIN_HOLD_24H and entry_time_str:
                     try:
                         entry_dt = datetime.fromisoformat(entry_time_str)
                         hours_held = (now - entry_dt).total_seconds() / 3600
                         if hours_held < 24:
-                            pdt_blocked = True
+                            hold_blocked = True
                             print(f"  🔒 {sym} 持有仅 {hours_held:.1f}h，需满24h才能卖出")
                     except Exception as e:
                         print(f"  [WARN] PDT check failed: {e}")
 
-                if pdt_blocked:
-                    print(f"${price:.2f} RSI={rsi:.1f} [{entry_mode or '?'}] 🔒 PDT保护")
+                if hold_blocked:
+                    print(f"${price:.2f} RSI={rsi:.1f} [{entry_mode or '?'}] 🔒 持仓未满24h")
                     sell_triggers = []
                 else:
                     # 根据入场模式选择卖出检查函数
@@ -787,12 +802,12 @@ async def run():
                 # ── 硬止损（无条件）──
                 if l[-1] <= stop_price:  # use candle low, not close
                     print(f"  🛑 STOP LOSS {sym}: ${price:.2f} ≤ ${stop_price:.2f} (-{STOP_LOSS_PCT*100:.0f}%)")
-                    filled, fill_price = await place_and_confirm(ib, sym, "SELL", pos["qty"], price, mode=MODE)
+                    filled, fill_price = await place_and_confirm(ib, sym, "SELL", int(pos["qty"]), price, mode=MODE)
                     if filled:
                         prev_last_sells[sym] = now.isoformat()
                         pnl = (fill_price - pos["avg_cost"]) * pos["qty"]
-                        session_trades.append({"sym": sym, "action": "SELL", "reason": "stop_loss", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
-                        notify_stop_loss(sym, price, stop_price, "hard")
+                        session_trades.append({"sym": sym, "action": "SELL", "reason": "stop_loss", "price": round(fill_price,2), "qty": pos["qty"], "pnl": round(pnl,2), "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
+                        notify_stop_loss(sym, fill_price, stop_price, "hard")
                         positions[sym] = None
                         sell_triggers = ["硬止损"]
                 else:
@@ -803,7 +818,7 @@ async def run():
                             entry_dt = datetime.fromisoformat(entry_time_str)
                             elapsed = (now - entry_dt).total_seconds()
                             in_cooldown = elapsed < COOLDOWN_MINUTES * 60
-                        except:
+                        except (ValueError, TypeError):
                             pass
 
                     if sell_triggers:
@@ -813,11 +828,11 @@ async def run():
                             sell_triggers = []
                         else:
                             print(f"  SELL {sym}: {sell_triggers}")
-                            filled, fill_price = await place_and_confirm(ib, sym, "SELL", pos["qty"], price, mode=MODE)
+                            filled, fill_price = await place_and_confirm(ib, sym, "SELL", int(pos["qty"]), price, mode=MODE)
                             if filled:
                                 prev_last_sells[sym] = now.isoformat()
                                 pnl = (fill_price - pos["avg_cost"]) * pos["qty"]
-                                session_trades.append({"sym": sym, "action": "SELL", "reason": "technical", "price": round(price,2), "qty": pos["qty"], "pnl": round(pnl,2), "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
+                                session_trades.append({"sym": sym, "action": "SELL", "reason": "technical", "price": round(fill_price,2), "qty": pos["qty"], "pnl": round(pnl,2), "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
                                 notify_trade(sym, "SELL", fill_price, pos["qty"], reason=",".join(sell_triggers))
                                 positions[sym] = None
                     elif not in_cooldown:
@@ -870,7 +885,7 @@ async def run():
                 all_lines = [l.strip() for l in open(advisor_log_path) if l.strip()]
                 for line in all_lines[-100:]:
                     try: advisor_history.append(json.loads(line))
-                    except: pass
+                    except json.JSONDecodeError: pass
             dashboard["advisor_history"] = advisor_history
         except Exception:
             dashboard["advisor_history"] = []
