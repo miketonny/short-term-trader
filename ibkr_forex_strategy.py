@@ -25,15 +25,28 @@ PAIRS = {
 CANDLES = 100
 RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
-RSI_TREND_ENTRY = 50
+RSI_TREND_ENTRY = 52
 RSI_TREND_OVERBOUGHT = 75
 ADX_TRENDING = 20
-MACD_HIST_THRESHOLD = 0.00005
+MACD_HIST_THRESHOLD = 0.00015
 
 # 风控
+
+
+def _shadow_compare(advice, default_action):
+    """Build shadow comparison dict for advisor vs strategy audit trail."""
+    if advice and isinstance(advice, dict):
+        return {"advisor_direction": advice.get("direction", "unknown"),
+                "strategy_action": default_action,
+                "note": "shadow-only, strategy proceeds regardless"}
+    return {"advisor_direction": "timeout_or_error",
+            "strategy_action": default_action,
+            "note": "advisor unavailable, strategy proceeds"}
 RISK_PCT = 0.01
 STOP_PIPS = 30
-TRAILING_PIPS = 20      # 移动止损：涨了锁利润
+TRAILING_PIPS = 28      # 移动止损
+BREAKEVEN_PIPS = 10     # 浮盈≥10pip 止损移到入场价(保本)
+TAKE_PROFIT_PIPS = 45   # 止盈：涨了锁利润
 COOLDOWN_MINUTES = 15
 REENTRY_COOLDOWN = 15
 
@@ -53,6 +66,13 @@ from circuit_breaker import CircuitBreaker
 from data_cache import DataCache, get_cache
 from rate_limiter import get_twelve_data_limiter, random_ua
 from notifier import notify_trade, notify_error, notify_stop_loss
+try:
+    from advisor_client import call_advisor, log_advisor_call, build_entry_context, build_position_context
+except ImportError:
+    call_advisor = lambda *a, **kw: None
+    log_advisor_call = lambda *a, **kw: None
+    build_entry_context = lambda *a, **kw: {}
+    build_position_context = lambda *a, **kw: {}
 from ib_insync import IB, Forex, MarketOrder
 
 # 输出
@@ -68,7 +88,7 @@ _circuit = CircuitBreaker(
 )
 
 # ── 缓存 & 限流 ──
-_cache = get_cache()
+_cache = get_cache(cache_dir="/root/live_ibkr_dashboard/cache")
 _limiter = get_twelve_data_limiter()
 
 # Pip 值 (per 100k units in USD)
@@ -177,7 +197,7 @@ def is_forex_market_open():
     return True
 async def place_and_confirm(ib, ibkr_pair, action, quantity):
     contract = Forex(ibkr_pair)
-    order = MarketOrder(action, quantity)
+    order = MarketOrder(action, quantity, tif="GTC")
     trade = ib.placeOrder(contract, order)
 
     deadline = time.time() + ORDER_TIMEOUT
@@ -217,6 +237,33 @@ def _write_dashboard_status(status, status_text, extra=None):
     }
     if extra:
         dashboard['_extra'] = extra
+
+    # Advisor tail — merge last 100 lines + daily cost into data.json
+    try:
+        from advisor_client import LOG_PATH as ADVISOR_LOG
+        cost_file = os.path.expanduser("~/forex-advisor/state/cost_" + datetime.now().strftime("%Y-%m-%d") + ".json")
+        advisor_cost_usd = 0.0
+        if os.path.exists(cost_file):
+            cost_data = json.load(open(cost_file))
+            advisor_cost_usd = cost_data.get("usd", 0.0)
+        advisor_history = []
+        if os.path.exists(ADVISOR_LOG):
+            lines_to_read = []
+            with open(ADVISOR_LOG, "r") as lf:
+                for line in lf:
+                    if line.strip():
+                        lines_to_read.append(line.strip())
+            for line in lines_to_read[-100:]:
+                try:
+                    advisor_history.append(json.loads(line))
+                except:
+                    pass
+        dashboard["advisor_history"] = advisor_history
+        dashboard["advisor_cost"] = {"usd": round(advisor_cost_usd, 4), "capped": advisor_cost_usd >= 1.0}
+    except Exception:
+        dashboard["advisor_history"] = []
+        dashboard["advisor_cost"] = {"usd": 0.0, "capped": False}
+
     with open(os.path.expanduser('~/forex_dashboard/data.json'), 'w') as f:
         json.dump(dashboard, f)
 
@@ -417,6 +464,7 @@ async def run():
                         "RSI超卖": bool(rsi < RSI_OVERSOLD),
                         "触及下轨": bool(price <= lower * 1.02),
                         "趋势向上": bool(price > sma),
+                        "趋势明确": bool(adx > 22),
                         "趋势明确": bool(adx > ADX_TRENDING),
                         "MACD转正": bool(hist > MACD_HIST_THRESHOLD and ph < hist),
                     }
@@ -437,6 +485,12 @@ async def run():
                             pass
                     if all_ok:
                         qty = calc_position_size(nlv, display_pair)
+                        entry_ctx = build_entry_context(
+                            display_pair, now.isoformat(), price, rsi, sma, upper, lower,
+                            adx, sl, ml, nlv, qty, mode, checks, session_trades,
+                        )
+                        advice = await call_advisor("/evaluate_entry", entry_ctx, timeout=15.0)
+                        log_advisor_call("entry", display_pair, "BUY", entry_ctx, advice, shadow=_shadow_compare(advice, "BUY"))
                         print(f"\n  🟢 BUY [{mode}] {display_pair} = {qty} units")
                         filled, fill_price = await place_and_confirm(ib, ibkr_pair, "BUY", qty)
                         if filled:
@@ -455,10 +509,11 @@ async def run():
                         print("")
 
                 elif mode == "trend":
-                    # 3个条件: RSI>50 + 趋势向上 + MACD金叉
+                    # 4个条件: RSI>52 + 趋势向上 + ADX>22 + MACD金叉
                     checks = {
-                        "RSI>50": bool(rsi > RSI_TREND_ENTRY),
+                        "RSI>52": bool(rsi > RSI_TREND_ENTRY),
                         "趋势向上": bool(price > sma),
+                        "趋势明确": bool(adx > 22),
                         "MACD金叉": bool(ml > sl and hist > MACD_HIST_THRESHOLD),
                     }
                     score = sum(1 for v in checks.values() if v)
@@ -478,6 +533,12 @@ async def run():
                             pass
                     if all_ok:
                         qty = calc_position_size(nlv, display_pair)
+                        entry_ctx = build_entry_context(
+                            display_pair, now.isoformat(), price, rsi, sma, upper, lower,
+                            adx, sl, ml, nlv, qty, mode, checks, session_trades,
+                        )
+                        advice = await call_advisor("/evaluate_entry", entry_ctx, timeout=15.0)
+                        log_advisor_call("entry", display_pair, "BUY", entry_ctx, advice, shadow=_shadow_compare(advice, "BUY"))
                         print(f"\n  🟢 BUY [{mode}] {display_pair} = {qty} units")
                         filled, fill_price = await place_and_confirm(ib, ibkr_pair, "BUY", qty)
                         if filled:
@@ -513,6 +574,12 @@ async def run():
                     trailing_stop = new_trail
                     pos["trailing_stop"] = trailing_stop  # persist
 
+                # ── 保本止损：浮盈≥10pip 止损移到入场价，之后怎么走都不亏 ──
+                if price - entry_price >= BREAKEVEN_PIPS * pip_size and trailing_stop < entry_price:
+                    trailing_stop = entry_price
+                    pos["trailing_stop"] = trailing_stop  # persist
+                    print(f"  🔒 {display_pair} 浮盈≥{BREAKEVEN_PIPS}pip，止损移至保本 {entry_price:.5f}")
+
                 effective_stop = max(original_stop, trailing_stop)
 
                 if entry_mode == "trend":
@@ -530,12 +597,37 @@ async def run():
                         sell_names.append("MACD死叉")
 
                 pair_data[display_pair]["sell_triggers"] = sell_names
+                pos_ctx = build_position_context(
+                    display_pair, now.isoformat(), price, pos["avg_cost"],
+                    pos["qty"], entry_time_str, entry_mode, trailing_stop,
+                    (price - pos["avg_cost"]) / (PIP_SIZES.get(display_pair, 0.0001)) * PIP_VALUES.get(display_pair, 10.0) * (pos["qty"] / 100000),
+                    rsi, sma, adx, nlv, session_trades,
+                )
+                pos_advice = await call_advisor("/evaluate_position", pos_ctx, timeout=15.0)
+                # advisor exit signal → follow it (backtest: 28/41 better, saved $6,147)
+                if pos_advice and isinstance(pos_advice, dict) and pos_advice.get("direction") in ("exit", "trim_half"):
+                    sell_names.append("advisor")
+                log_advisor_call("position", display_pair, "HOLD", pos_ctx, pos_advice, shadow=_shadow_compare(pos_advice, "HOLD"))
                 pair_data[display_pair]["mode"] = entry_mode
 
                 print(f"{price:.5f} RSI={rsi:.1f} [{entry_mode}]" + (" ⚡卖出!" if sell_names else ""))
-
+                # ── 止盈 ──
+                if price >= entry_price + TAKE_PROFIT_PIPS * pip_size:
+                    tp_pnl = TAKE_PROFIT_PIPS * PIP_VALUES.get(display_pair, 10.0) * (pos.get("qty", 0) / 100000)
+                    print(f"  🎯 止盈: +{TAKE_PROFIT_PIPS}pips (${tp_pnl:.2f})")
+                    filled, _ = await place_and_confirm(ib, ibkr_pair, "SELL", pos["qty"])
+                    if filled:
+                        prev_last_sells[display_pair] = now.isoformat()
+                        session_trades.append({
+                            "sym": display_pair, "action": "SELL", "reason": "take_profit",
+                            "price": round(price, 5), "qty": pos["qty"],
+                            "pnl": round(tp_pnl, 2), "time": now.strftime("%H:%M:%S")
+                        })
+                        notify_trade(display_pair, "SELL", price, pos["qty"], reason="止盈")
+                        positions[display_pair] = None
                 # ── 硬止损 / 移动止损 ──
-                if price <= effective_stop:
+                elif price <= effective_stop:
+
                     reason = "trailing_stop" if trailing_stop > original_stop else "stop_loss"
                     stop_label = "移动止损" if trailing_stop > original_stop else "硬止损"
                     print(f"  🛑 {stop_label}: {price:.5f} ≤ {effective_stop:.5f} (原始止损 {original_stop:.5f})")
@@ -561,7 +653,7 @@ async def run():
                         except:
                             pass
 
-                    if in_cooldown:
+                    if in_cooldown and "advisor" not in sell_names:
                         print(f"  ⏳ 保护期内，跳过: {sell_names}")
                     else:
                         print(f"  🔔 SELL: {sell_names}")
@@ -620,6 +712,25 @@ async def run():
             "last_sells": last_sells_out,
             "last_buys": prev_last_buys
         }
+
+        # Advisor tail merge
+        try:
+            advisor_log = os.path.expanduser("~/forex_dashboard/advisor_log.json")
+            advisor_history = []
+            if os.path.exists(advisor_log):
+                all_lines = [l.strip() for l in open(advisor_log) if l.strip()]
+                for line in all_lines[-100:]:
+                    try: advisor_history.append(json.loads(line))
+                    except: pass
+            cost_file = os.path.expanduser("~/forex-advisor/state/cost_" + now.strftime("%Y-%m-%d") + ".json")
+            advisor_cost_usd = 0.0
+            if os.path.exists(cost_file):
+                advisor_cost_usd = json.load(open(cost_file)).get("usd", 0.0)
+            dashboard["advisor_history"] = advisor_history
+            dashboard["advisor_cost"] = {"usd": round(advisor_cost_usd, 4), "capped": advisor_cost_usd >= 1.0}
+        except Exception:
+            dashboard["advisor_history"] = []
+            dashboard["advisor_cost"] = {"usd": 0.0, "capped": False}
 
         with open(f"{DASHBOARD_DIR}/data.json", "w") as f:
             json.dump(dashboard, f)
