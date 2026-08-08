@@ -105,3 +105,44 @@ Fixed: `status_code == "closed"`.
 - Don't use `timedelta(hours=4)` for ET — use `ZoneInfo("America/New_York")`
 - Don't check only `price` (close) for stop loss — use `l[-1]` (candle low)
 - Don't edit on local and SCP — edit directly on server via SSH
+
+## Forex Strategy
+
+| Item | Detail |
+|------|--------|
+| Script | `ibkr_forex_strategy.py` |
+| Runner | `forex_run.sh` (cron every 15 min) |
+| IBKR port | 4002 (paper trading) |
+| Client ID | 20 |
+| Dashboard | `/root/forex_dashboard/` |
+| Data file | `/root/forex_dashboard/data.json` |
+| Log | `/root/forex_dashboard/strategy.log` |
+| Advisor log | `/root/forex_dashboard/advisor_log.json` |
+| Daily summary | `/root/forex_dashboard/daily_summary.json` |
+| Pairs | USD.JPY only (EUR.USD, GBP.USD removed 2026-05-20) |
+| NLV | ~11.7M JPY paper (~$117k USD equivalent) |
+| Qty per trade | 500,000 units |
+
+### Advisor Integration
+
+Advisor at `/root/forex-advisor/`, called at two points:
+- **Entry**: `/evaluate_entry` — advisor can say `reject`. Strategy IGNORES it (backtest: reject missed 12 winners vs 8 losers).
+- **Position**: `/evaluate_position` — advisor can say `exit` / `trim_half` / `hold`.
+
+**2026-07-05 change**: Advisor exit signals now followed.
+Backtest on 41 pairs: advisor exit was right 28/13, saved $6,147.
+Advisor exit bypasses cooldown protection.
+To revert: remove the 3-line advisor check after `pos_advice` line, restore `if in_cooldown:`.
+
+### Quick Forex Checks
+
+```bash
+# Recent P&L summary
+ssh trader "python3 -c 'import json; d=json.load(open(\"/root/forex_dashboard/data.json\")); sells=[t for t in d[\"trade_history\"] if t.get(\"action\")==\"SELL\"]; pnl=sum(t.get(\"pnl\",0) or 0 for t in sells); print(f\"{len(sells)} sells, P&L: {pnl:,.2f}\")'"
+
+# Today session
+ssh trader "cat /root/forex_dashboard/daily_summary.json"
+
+# Live tail
+ssh trader "tail -f /root/forex_dashboard/strategy.log"
+```

@@ -9,6 +9,6 @@
   "position_alloc": 0.1,
   "macd_hist_threshold": 0.1,
   "reentry_cooldown_minutes": 15,
-  "pdt_protect": true,
+  "min_hold_24h": true,
   "trend_filter_sma_period": 50
 }

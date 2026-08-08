@@ -4,7 +4,7 @@ import json, os
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
-PORT = 8765
+PORT = int(os.environ.get("DASHBOARD_PORT", 8765))
 DASHBOARD_DIR = Path(os.path.expanduser("~/ibkr_dashboard")).expanduser()
 os.chdir(DASHBOARD_DIR)
 

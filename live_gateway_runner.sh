@@ -1,11 +1,11 @@
 #!/bin/bash
-# Live Gateway runner v2
-# Changes vs v1:
-#   - flock single-instance lock to prevent the 2026-05-27 incident
-#     (watchdog killed the java child but not this parent bash, then launched
-#      a second runner; result: 2 java instances logging into same IB account,
-#      IBKey push routing got confused, user could not approve).
+# Live Gateway runner v3
+# Changes vs v2:
+#   - touch /tmp/live_gateway_restart_ts before each ibcstart attempt + backoff + pause
+#     so watchdog v8 can detect "runner actively managing" and skip kill
 LOCKFILE="/tmp/live_gateway_runner.lock"
+RESTART_TS="/tmp/live_gateway_restart_ts"
+
 exec 200>"$LOCKFILE"
 if ! flock -n 200; then
     echo "$(date): another live_gateway_runner.sh already holds $LOCKFILE - exit"
@@ -27,6 +27,7 @@ tg() {
 
 while true; do
     echo "$(date): starting live gateway (attempt $((ATTEMPTS+1)))..."
+    touch "$RESTART_TS"   # v3: 告知 watchdog 新一轮 2FA 等待开始
     /ibgateway/ibc/scripts/ibcstart.sh 1045 -g \
         --tws-path=/root/Jts --tws-settings-path=/root/Jts/live \
         --ibc-path=/ibgateway/ibc \
@@ -37,11 +38,16 @@ while true; do
     ATTEMPTS=$((ATTEMPTS+1))
     if [ $ATTEMPTS -ge $MAX_FAIL ]; then
         tg "🚨 live Gateway 连续 ${MAX_FAIL} 次失败 → 暂停 1h，避免凌晨 IBKey 推送轰炸"
-        sleep 3600
+        # 暂停期间每 120s 更新一次时间戳，防止 watchdog 误判为 stuck
+        for _ in $(seq 1 30); do
+            touch "$RESTART_TS"
+            sleep 120
+        done
         ATTEMPTS=0
     else
         SLEEP=${BACKOFFS[$((ATTEMPTS-1))]}
         echo "$(date): backoff ${SLEEP}s"
+        touch "$RESTART_TS"   # v3: 告知 watchdog "我还活着，正在 backoff"
         sleep $SLEEP
     fi
 done

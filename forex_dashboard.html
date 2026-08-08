@@ -107,6 +107,15 @@
   .trade-win { color: var(--green); }
   .trade-loss { color: var(--red); }
   .trade-reason { font-size: 11px; color: var(--muted); }
+  /* Advisor */
+  .advisor-agree { color: var(--green); font-weight: 600; }
+  .advisor-caution { color: var(--yellow); font-weight: 600; }
+  .advisor-reject { color: var(--red); font-weight: 600; }
+  .advisor-reasons { font-size: 11px; color: var(--muted); max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .advisor-reasons:hover { white-space: normal; overflow: visible; }
+  .cost-ok { color: var(--green); }
+  .cost-capped { color: var(--red); animation: pulse 1.5s infinite; }
+
 </style>
 </head>
 <body>
@@ -147,6 +156,19 @@
     </thead>
     <tbody id="tradeBody">
       <tr><td colspan="6" style="color:var(--muted);text-align:center">暂无交易记录</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Advisor Decisions -->
+<h2>🧠 Advisor Decisions</h2>
+<div class="report-panel">
+  <table class="trade-table">
+    <thead>
+      <tr><th>时间</th><th>品种</th><th>类型</th><th>规则动作</th><th>Advisor</th><th>置信度</th><th>建议TP</th><th>关键理由</th></tr>
+    </thead>
+    <tbody id="advisorBody">
+      <tr><td colspan="8" style="color:var(--muted);text-align:center">暂无 advisor 记录</td></tr>
     </tbody>
   </table>
 </div>
@@ -264,6 +286,9 @@ function render(data) {
 
   // Trade history
   renderTradeHistory(data);
+
+  // Advisor
+  renderAdvisorHistory(data);
 }
 
 function renderReport(data) {
@@ -326,6 +351,49 @@ function renderTradeHistory(data) {
       '<td>' + (t.qty || '') + '</td>' +
       '<td>' + (t.price != null ? t.price.toFixed(5) : '--') + '</td>' +
       '<td class="' + (t.action === 'SELL' && t.pnl != null ? (t.pnl >= 0 ? 'trade-win' : 'trade-loss') : '') + '" style="font-weight:600">' + pnlText + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+function renderAdvisorHistory(data) {
+  const history = data.advisor_history || [];
+  const tbody = document.getElementById('advisorBody');
+
+  // Cost tile
+  const costTile = document.getElementById('advisorCostTile');
+  const cost = data.advisor_cost || {};
+  if (costTile) {
+    const cappedClass = cost.capped ? 'cost-capped' : 'cost-ok';
+    costTile.innerHTML = '<span class="' + cappedClass + '">$' + (cost.usd || 0).toFixed(4) + '</span> / $1.00';
+  }
+
+  if (history.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted);text-align:center">暂无 advisor 记录</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = history.slice(-30).reverse().map(row => {
+    const dec = row.decision || {};
+    const dir = dec.direction || '--';
+    let dirClass = '';
+    if (dir === 'follow') dirClass = 'advisor-agree';
+    else if (dir === 'caution') dirClass = 'advisor-caution';
+    else if (dir === 'reject' || dir === 'exit') dirClass = 'advisor-reject';
+
+    const conf = dec.confidence != null ? (dec.confidence * 100).toFixed(0) + '%' : '--';
+    const tp = dec.suggested_tp_pips != null ? dec.suggested_tp_pips + ' pips' : '--';
+    const reasons = (dec.key_reasons || []).join('; ') || '--';
+    const ctx = row.context || {};
+
+    return '<tr>' +
+      '<td style="color:var(--muted);font-size:12px">' + (row.run_ts || '').slice(11, 19) + '</td>' +
+      '<td style="font-weight:600">' + (row.symbol || '--') + '</td>' +
+      '<td style="font-size:12px">' + (row.kind || '--') + '</td>' +
+      '<td>' + (row.rule_action || '--') + '</td>' +
+      '<td class="' + dirClass + '">' + dir + '</td>' +
+      '<td>' + conf + '</td' +
+      '<td>' + tp + '</td>' +
+      '<td class="advisor-reasons" title="' + reasons.replace(/"/g, '&quot;') + '">' + reasons + '</td' +
       '</tr>';
   }).join('');
 }

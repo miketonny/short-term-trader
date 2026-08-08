@@ -174,6 +174,10 @@
   .trade-win { color: var(--green); }
   .trade-loss { color: var(--red); }
   .trade-reason { font-size: 11px; color: var(--muted); }
+  /* Advisor */
+  .advisor-agree { color: var(--green); font-weight: 600; }
+  .advisor-pending { color: var(--yellow); }
+  .advisor-checks { font-size: 11px; color: var(--muted); max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
@@ -256,6 +260,20 @@
   </table>
 </div>
 
+
+<div class="section-header">
+  <h2>🧠 Adviser Signals</h2>
+</div>
+<div class="config-panel open" id="advisorPanel">
+  <table class="trade-table">
+    <thead>
+      <tr><th>时间</th><th>品种</th><th>类型</th><th>动作</th><th>价格</th><th>RSI</th><th>信号通过</th></tr>
+    </thead>
+    <tbody id="advisorBody">
+      <tr><td colspan="7" style="color:var(--muted);text-align:center">暂无 adviser 记录</td></tr>
+    </tbody>
+  </table>
+</div>
 
 <div class="grid" id="grid"></div>
 
@@ -453,6 +471,32 @@ function renderTradeHistory(data) {
   }).join('');
 }
 
+function renderAdvisorHistory(data) {
+  const history = data.advisor_history || [];
+  const tbody = document.getElementById('advisorBody');
+  if (history.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted);text-align:center">暂无 adviser 记录</td></tr>';
+    return;
+  }
+  tbody.innerHTML = history.slice(-30).reverse().map(row => {
+    const ctx = row.context || {};
+    const checks = ctx.signal_checks || {};
+    const passed = Object.entries(checks).filter(([k,v]) => v).map(([k]) => k).join(', ') || '--';
+    const rsi = ctx.rsi != null ? ctx.rsi.toFixed(1) : '--';
+    const price = ctx.price != null ? '$' + ctx.price.toFixed(2) : '--';
+    const kindLabel = row.kind === 'entry' ? '入场' : row.kind === 'position' ? '持仓' : (row.kind || '--');
+    return '<tr>' +
+      '<td style="color:var(--muted);font-size:12px;white-space:nowrap">' + (row.run_ts || '').slice(11, 19) + '</td>' +
+      '<td style="font-weight:600">' + (row.symbol || '--') + '</td>' +
+      '<td style="font-size:12px">' + kindLabel + '</td>' +
+      '<td>' + (row.rule_action || '--') + '</td>' +
+      '<td>' + price + '</td>' +
+      '<td>' + rsi + '</td>' +
+      '<td class="advisor-checks" title="' + passed + '">' + passed + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
 function renderReport(data) {
   const stats = data.session_stats;
   if (!stats) {
@@ -508,6 +552,7 @@ function render(data) {
 
   renderReport(data);
   renderTradeHistory(data);
+  renderAdvisorHistory(data);
   document.getElementById('liveDot').innerHTML =
     '<span class="status-dot dot-live"></span> 运行中';
 
