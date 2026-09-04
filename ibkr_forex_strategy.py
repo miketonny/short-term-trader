@@ -33,12 +33,13 @@ MACD_HIST_THRESHOLD = 0.00015
 # 风控
 
 
-def _shadow_compare(advice, default_action):
+def _shadow_compare(advice, default_action, enforced=False):
     """Build shadow comparison dict for advisor vs strategy audit trail."""
     if advice and isinstance(advice, dict):
+        note = "ENFORCED: advisor decision applied" if enforced else "shadow-only, strategy proceeds regardless"
         return {"advisor_direction": advice.get("direction", "unknown"),
                 "strategy_action": default_action,
-                "note": "shadow-only, strategy proceeds regardless"}
+                "note": note}
     return {"advisor_direction": "timeout_or_error",
             "strategy_action": default_action,
             "note": "advisor unavailable, strategy proceeds"}
@@ -48,6 +49,7 @@ TRAILING_PIPS = 28      # 移动止损
 BREAKEVEN_PIPS = 10     # 浮盈≥10pip 止损移到入场价(保本)
 TAKE_PROFIT_PIPS = 45   # 止盈：涨了锁利润
 COOLDOWN_MINUTES = 15
+ADVISOR_ENFORCE_REJECT = True  # advisor entry reject 直接否决入场(回测: reject 单 146 笔净亏 $4.8k)
 REENTRY_COOLDOWN = 15
 
 # IBKR
@@ -490,9 +492,14 @@ async def run():
                             adx, sl, ml, nlv, qty, mode, checks, session_trades,
                         )
                         advice = await call_advisor("/evaluate_entry", entry_ctx, timeout=15.0)
-                        log_advisor_call("entry", display_pair, "BUY", entry_ctx, advice, shadow=_shadow_compare(advice, "BUY"))
-                        print(f"\n  🟢 BUY [{mode}] {display_pair} = {qty} units")
-                        filled, fill_price = await place_and_confirm(ib, ibkr_pair, "BUY", qty)
+                        adv_reject = ADVISOR_ENFORCE_REJECT and isinstance(advice, dict) and advice.get("direction") == "reject"
+                        log_advisor_call("entry", display_pair, "BUY", entry_ctx, advice, shadow=_shadow_compare(advice, "BUY", enforced=adv_reject))
+                        filled, fill_price = False, None
+                        if adv_reject:
+                            print(f"\n  🚫 advisor reject conf={advice.get('confidence')} — 跳过 {display_pair}")
+                        else:
+                            print(f"\n  🟢 BUY [{mode}] {display_pair} = {qty} units")
+                            filled, fill_price = await place_and_confirm(ib, ibkr_pair, "BUY", qty)
                         if filled:
                             prev_last_buys[display_pair] = now.isoformat()
                             pip_size = PIP_SIZES.get(display_pair, 0.0001)
@@ -538,9 +545,14 @@ async def run():
                             adx, sl, ml, nlv, qty, mode, checks, session_trades,
                         )
                         advice = await call_advisor("/evaluate_entry", entry_ctx, timeout=15.0)
-                        log_advisor_call("entry", display_pair, "BUY", entry_ctx, advice, shadow=_shadow_compare(advice, "BUY"))
-                        print(f"\n  🟢 BUY [{mode}] {display_pair} = {qty} units")
-                        filled, fill_price = await place_and_confirm(ib, ibkr_pair, "BUY", qty)
+                        adv_reject = ADVISOR_ENFORCE_REJECT and isinstance(advice, dict) and advice.get("direction") == "reject"
+                        log_advisor_call("entry", display_pair, "BUY", entry_ctx, advice, shadow=_shadow_compare(advice, "BUY", enforced=adv_reject))
+                        filled, fill_price = False, None
+                        if adv_reject:
+                            print(f"\n  🚫 advisor reject conf={advice.get('confidence')} — 跳过 {display_pair}")
+                        else:
+                            print(f"\n  🟢 BUY [{mode}] {display_pair} = {qty} units")
+                            filled, fill_price = await place_and_confirm(ib, ibkr_pair, "BUY", qty)
                         if filled:
                             prev_last_buys[display_pair] = now.isoformat()
                             pip_size = PIP_SIZES.get(display_pair, 0.0001)
@@ -607,7 +619,8 @@ async def run():
                 # advisor exit signal → follow it (backtest: 28/41 better, saved $6,147)
                 if pos_advice and isinstance(pos_advice, dict) and pos_advice.get("direction") in ("exit", "trim_half"):
                     sell_names.append("advisor")
-                log_advisor_call("position", display_pair, "HOLD", pos_ctx, pos_advice, shadow=_shadow_compare(pos_advice, "HOLD"))
+                pos_enforced = bool(pos_advice and isinstance(pos_advice, dict) and pos_advice.get("direction") in ("exit", "trim_half"))
+                log_advisor_call("position", display_pair, "HOLD", pos_ctx, pos_advice, shadow=_shadow_compare(pos_advice, "HOLD", enforced=pos_enforced))
                 pair_data[display_pair]["mode"] = entry_mode
 
                 print(f"{price:.5f} RSI={rsi:.1f} [{entry_mode}]" + (" ⚡卖出!" if sell_names else ""))
