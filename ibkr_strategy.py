@@ -22,11 +22,13 @@ from rate_limiter import get_twelve_data_limiter, random_ua
 from notifier import notify_trade, notify_error, notify_stop_loss
 # Advisor client (shadow-only, never blocks trading)
 try:
-    from advisor_client import call_advisor, log_advisor_call, build_entry_context
+    from advisor_client import (call_advisor, log_advisor_call,
+                                build_entry_context, build_position_context)
 except ImportError:
     async def call_advisor(*a, **kw): return None
     log_advisor_call = lambda *a, **kw: None
     build_entry_context = lambda *a, **kw: {}
+    build_position_context = lambda *a, **kw: {}
 
 
 # ============ 配置 ============
@@ -96,6 +98,10 @@ COOLDOWN_MINUTES = _cfg.get("cooldown_minutes", COOLDOWN_MINUTES)
 REENTRY_COOLDOWN_MINUTES = _cfg.get("reentry_cooldown_minutes", 15)
 MACD_HIST_THRESHOLD = _cfg.get("macd_hist_threshold", 0.05)
 MIN_HOLD_24H = _cfg.get("min_hold_24h", True)  # 24h最短持仓
+# Advisor 日志:必须与看板读取路径一致,否则看板 advisor_history 一直是旧的
+ADVISOR_LOG = _cfg.get("advisor_log", "/root/live_ibkr_dashboard/advisor_log.json")
+# 成交回报没到时的佣金兜底值(Tiered 最低 $0.35;Fixed 是 $1.00)
+COMMISSION_FALLBACK = float(_cfg.get("commission_per_order", 0.35))
 TREND_FILTER_SMA_PERIOD = _cfg.get("trend_filter_sma_period", 50)  # 0=禁用, SMA周期过滤下跌趋势
 MAX_RETRIES = _cfg.get("max_retries", MAX_RETRIES)
 MAX_POSITIONS = _cfg.get("max_positions", 3)
@@ -295,9 +301,23 @@ def determine_mode(rsi, price, sma):
     return None
 
 # ============ 交易执行 ============
+async def _order_commission(trade):
+    """从成交回报累加佣金。回报未到就轮询等待,超时用 COMMISSION_FALLBACK。"""
+    for _ in range(10):
+        try:
+            reports = [f.commissionReport for f in (getattr(trade, "fills", None) or [])
+                       if getattr(f, "commissionReport", None) is not None]
+            if reports and all(r.commission is not None for r in reports):
+                return sum(float(r.commission) for r in reports)
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+    return COMMISSION_FALLBACK
+
+
 async def place_and_confirm(ib, sym, action, quantity, price, mode=None):
     """
-    下单并等待成交。返回 (filled: bool, fill_price: float|None)
+    下单并等待成交。返回 (filled: bool, fill_price: float|None, commission: float)
     """
     contract = Stock(sym, "SMART", "USD")
     await ib.qualifyContractsAsync(contract)
@@ -315,10 +335,10 @@ async def place_and_confirm(ib, sym, action, quantity, price, mode=None):
         status = trade.orderStatus.status
         if status in ("Submitted", "PreSubmitted"):
             print(f"  📝 GTC {action} {sym} ×{quantity} limit ${limit_price:.2f} (after-close)")
-            return True, limit_price
+            return True, limit_price, COMMISSION_FALLBACK
         else:
             print(f"  ❌ {sym} GTC failed: {status}")
-            return False, None
+            return False, None, 0.0
     else:
         order = MarketOrder(action, quantity)
         order.tif = "DAY"
@@ -330,25 +350,28 @@ async def place_and_confirm(ib, sym, action, quantity, price, mode=None):
             status = trade.orderStatus.status
             if status == "Filled":
                 avg_price = trade.orderStatus.avgFillPrice
+                comm = await _order_commission(trade)
                 print(f"  ✅ {action} {sym} ×{quantity:.3f} @ ${avg_price:.2f}")
-                return True, avg_price
+                return True, avg_price, comm
             if status in ("Cancelled", "Inactive", "Rejected"):
                 filled_qty = trade.orderStatus.filled
                 if filled_qty and filled_qty > 0:
                     avg_price = trade.orderStatus.avgFillPrice or price
+                    comm = await _order_commission(trade)
                     print(f"  ⚠️ {sym} status={status} but filled={filled_qty}, treating as filled @ ${avg_price:.2f}")
-                    return True, avg_price
+                    return True, avg_price, comm
                 print(f"  ❌ {sym} order failed: {status}")
-                return False, None
+                return False, None, 0.0
 
         filled_qty = trade.orderStatus.filled
         if filled_qty and filled_qty > 0:
             avg_price = trade.orderStatus.avgFillPrice or price
+            comm = await _order_commission(trade)
             print(f"  ⚠️ {sym} timeout but filled={filled_qty}, treating as filled @ ${avg_price:.2f}")
-            return True, avg_price
+            return True, avg_price, comm
         print(f"  ⏰ {sym} timeout ({ORDER_TIMEOUT}s), status: {trade.orderStatus.status}")
         ib.cancelOrder(order)
-        return False, None
+        return False, None, 0.0
 
 async def run():
     global DASHBOARD_DIR, IB_PORT, CONFIG_FILE
@@ -680,7 +703,7 @@ async def run():
                                     adx, sl, ml, nlv, qty, mode, checks, session_trades,
                                 )
                                 advice = await call_advisor("/evaluate_entry", entry_ctx, timeout=15.0)
-                                log_advisor_call("entry", sym, "BUY", entry_ctx, advice)
+                                log_advisor_call("entry", sym, "BUY", entry_ctx, advice, log_path=ADVISOR_LOG)
                                 print(f"\n  🟢 BUY [{mode}] {sym} = {qty}股")
 
                                 has_open_order = any(t.contract.symbol == sym for t in ib.openTrades())
@@ -689,11 +712,11 @@ async def run():
 
                                     print(f"\n  \u23f3 {sym} \u5df2\u6709\u6302\u5355\uff0c\u8df3\u8fc7")
 
-                                    filled, fill_price = False, None
+                                    filled, fill_price, _comm = False, None, 0.0
 
                                 else:
 
-                                    filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty, price, mode=MODE)
+                                    filled, fill_price, _comm = await place_and_confirm(ib, sym, "BUY", qty, price, mode=MODE)
 
                                 if filled:
 
@@ -738,7 +761,7 @@ async def run():
                                     adx, sl, ml, nlv, qty, mode, checks, session_trades,
                                 )
                                 advice = await call_advisor("/evaluate_entry", entry_ctx, timeout=15.0)
-                                log_advisor_call("entry", sym, "BUY", entry_ctx, advice)
+                                log_advisor_call("entry", sym, "BUY", entry_ctx, advice, log_path=ADVISOR_LOG)
                                 print(f"\n  🟢 BUY [{mode}] {sym} = {qty}股")
 
                                 has_open_order = any(t.contract.symbol == sym for t in ib.openTrades())
@@ -747,11 +770,11 @@ async def run():
 
                                     print(f"\n  \u23f3 {sym} \u5df2\u6709\u6302\u5355\uff0c\u8df3\u8fc7")
 
-                                    filled, fill_price = False, None
+                                    filled, fill_price, _comm = False, None, 0.0
 
                                 else:
 
-                                    filled, fill_price = await place_and_confirm(ib, sym, "BUY", qty, price, mode=MODE)
+                                    filled, fill_price, _comm = await place_and_confirm(ib, sym, "BUY", qty, price, mode=MODE)
 
                                 if filled:
 
@@ -802,10 +825,10 @@ async def run():
                 # ── 硬止损（无条件）──
                 if l[-1] <= stop_price:  # use candle low, not close
                     print(f"  🛑 STOP LOSS {sym}: ${price:.2f} ≤ ${stop_price:.2f} (-{STOP_LOSS_PCT*100:.0f}%)")
-                    filled, fill_price = await place_and_confirm(ib, sym, "SELL", int(pos["qty"]), price, mode=MODE)
+                    filled, fill_price, sell_comm = await place_and_confirm(ib, sym, "SELL", int(pos["qty"]), price, mode=MODE)
                     if filled:
                         prev_last_sells[sym] = now.isoformat()
-                        pnl = (fill_price - pos["avg_cost"]) * pos["qty"]
+                        pnl = (fill_price - pos["avg_cost"]) * pos["qty"] - sell_comm
                         session_trades.append({"sym": sym, "action": "SELL", "reason": "stop_loss", "price": round(fill_price,2), "qty": pos["qty"], "pnl": round(pnl,2), "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
                         notify_stop_loss(sym, fill_price, stop_price, "hard")
                         positions[sym] = None
@@ -828,10 +851,19 @@ async def run():
                             sell_triggers = []
                         else:
                             print(f"  SELL {sym}: {sell_triggers}")
-                            filled, fill_price = await place_and_confirm(ib, sym, "SELL", int(pos["qty"]), price, mode=MODE)
+                            # 出场顾问(shadow-only:只记录建议,不改变本次执行)
+                            pos_ctx = build_position_context(
+                                sym, now.isoformat(), price, entry_price, pos["qty"],
+                                entry_time_str, entry_mode or "long", None,
+                                (price - entry_price) * pos["qty"],
+                                rsi, sma, adx, nlv, session_trades,
+                            )
+                            pos_advice = await call_advisor("/evaluate_position", pos_ctx, timeout=15.0)
+                            log_advisor_call("position", sym, "SELL", pos_ctx, pos_advice, log_path=ADVISOR_LOG)
+                            filled, fill_price, sell_comm = await place_and_confirm(ib, sym, "SELL", int(pos["qty"]), price, mode=MODE)
                             if filled:
                                 prev_last_sells[sym] = now.isoformat()
-                                pnl = (fill_price - pos["avg_cost"]) * pos["qty"]
+                                pnl = (fill_price - pos["avg_cost"]) * pos["qty"] - sell_comm
                                 session_trades.append({"sym": sym, "action": "SELL", "reason": "technical", "price": round(fill_price,2), "qty": pos["qty"], "pnl": round(pnl,2), "date": now.strftime("%m-%d"), "time": now.strftime("%H:%M:%S")})
                                 notify_trade(sym, "SELL", fill_price, pos["qty"], reason=",".join(sell_triggers))
                                 positions[sym] = None
@@ -879,7 +911,7 @@ async def run():
 
         # Advisor tail merge (read-only from log, does not block trading)
         try:
-            advisor_log_path = "/root/live_ibkr_dashboard/advisor_log.json"
+            advisor_log_path = ADVISOR_LOG
             advisor_history = []
             if os.path.exists(advisor_log_path):
                 all_lines = [l.strip() for l in open(advisor_log_path) if l.strip()]
