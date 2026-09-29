@@ -208,7 +208,7 @@ if [ "$RESTART_PAPER" = true ]; then
         sleep 5
         touch "$PAPER_TS"
         pgrep -f 'Xvfb :99' > /dev/null || { Xvfb :99 -screen 0 1024x768x24 & sleep 1; }
-        nohup flock -n /tmp/paper_gateway_runner.lock -c "cd /ibgateway/ibc && bash gatewaystart.sh -inline" > /tmp/paper_restart.log 2>&1 &
+        nohup flock -n /tmp/paper_gateway_runner.lock -c "cd /ibgateway/ibc && bash gatewaystart.sh -inline" > /tmp/paper_restart.log 2>&1 200>&- &
         PAPER_OK=false
         for i in $(seq 1 30); do
             sleep 2
@@ -243,7 +243,7 @@ if [ "$RESTART_LIVE" = true ]; then
         touch "$LIVE_TS"
         pgrep -f 'Xvfb :98' > /dev/null || { Xvfb :98 -screen 0 1024x768x16 & sleep 1; }
         export DISPLAY=:98
-        nohup bash /root/short-term-trader/live_gateway_runner.sh > /tmp/live_restart.log 2>&1 &
+        nohup bash /root/short-term-trader/live_gateway_runner.sh > /tmp/live_restart.log 2>&1 200>&- &
         LIVE_OK=false
         for i in $(seq 1 90); do
             sleep 2
