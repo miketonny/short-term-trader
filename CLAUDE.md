@@ -70,6 +70,8 @@ Commit `fc3cdfd` fixed this. Test covers 16 fractional share cases.
 ### PDT Restriction (U24171197 until 2026-06-10)
 Account is PDT-restricted. `trading_enabled` flag controls this.
 `_skip` guard prevents buying when `pos_count >= MAX_POSITIONS`.
+`pdt_protect: true` blocks same-day (ET) buy+sell via `PDT_PROTECT` config.
+`entry_time` fallback: positions from IB without entry_time get `now.isoformat()`.
 
 ### DST Hardcoded to EDT
 Old code: `timedelta(hours=4)` year-round. EST winter = 1-hour error.
@@ -120,6 +122,7 @@ Fixed: `status_code == "closed"`.
 - Don't use `timedelta(hours=4)` for ET — use `ZoneInfo("America/New_York")`
 - Don't check only `price` (close) for stop loss — use `l[-1]` (candle low)
 - Don't edit on local and SCP — edit directly on server via SSH
+- Always set `order.tif = "DAY"` on MarketOrder — otherwise IBKR order presets trigger Error 10349 (cancel-and-replace), causing strategy to think order failed while it actually fills
 
 ## Forex Strategy
 
