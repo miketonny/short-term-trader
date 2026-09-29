@@ -28,7 +28,22 @@ ssh -i ~/.ssh/trader_key root@112.213.39.172
 | `notifier.py` | Webhook/Telegram notifications |
 | `test_strategy.py` | **Unit tests** (68 cases, run before pushing) |
 | `run_live.sh` | Cron entry point (flock-guarded, every 5 min) |
-| `strategy_config.json` | Editable parameters (symbols, RSI thresholds, allocation, etc.) |
+| `strategy_config.json` | **策略参数真源**（symbols / RSI / 仓位 / interval）——git 跟踪，改这份 |
+
+### 配置路径（三条路径，一份文件）
+
+`strategy_config.json` 有三个路径容易混淆，**实际只有一份物理文件**：
+
+| 路径 | 角色 |
+|------|------|
+| `/root/short-term-trader/strategy_config.json` | **真源**，git 跟踪，改这份 |
+| `/root/live_ibkr_dashboard/strategy_config.json` | **软链接** → 指向真源 |
+| `/root/ibkr_dashboard/strategy_config.json` | 陈旧遗留，无人使用（是代码 `--config` 的默认值，但 cron 总是显式传参） |
+
+- `run_live.sh` 传 `--config /root/live_ibkr_dashboard/strategy_config.json`（经软链接落到真源）
+- 看板 `server_live.py` 的 `/save_config` 写同一路径（也经软链接）
+- 所以**在哪一处改都落到同一份文件**，不会漂移。改完记得 `git commit`。
+- ⚠️ 不要把软链接替换成普通文件 —— 那会重新制造两份并开始漂移。
 
 ## Logs (on server)
 
