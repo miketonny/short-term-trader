@@ -17,7 +17,7 @@ from strategy_core import *
 # ─── Config ─────────────────────────────────────────────────
 TWELVE_DATA_KEY = "a3377a4097ee4b2fba8a646a6dd898ab"
 SLIPPAGE = 0.001  # 0.1% slippage per trade
-DASHBOARD_DIR = Path(os.path.expanduser("~/ibkr_dashboard"))
+DASHBOARD_DIR = Path(os.path.expanduser("~/live_ibkr_dashboard"))
 CONFIG_FILE = DASHBOARD_DIR / "strategy_config.json"
 PREV_CONFIG_FILE = DASHBOARD_DIR / "strategy_config_prev.json"
 
