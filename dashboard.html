@@ -545,7 +545,7 @@ function renderSession(D){
     '</div>' + (curve.length > 4 ? sparkline(curve, total) : "");
 }
 
-function sparkline(vals, total){
+function sparkline(vals, total, label){
   const W = 260, H = 56, pad = 3;
   const lo = Math.min.apply(null, vals.concat(0)), hi = Math.max.apply(null, vals.concat(0));
   const span = (hi - lo) || 1;
@@ -554,7 +554,7 @@ function sparkline(vals, total){
   const pts = vals.map(function(v, i){ return x(i).toFixed(1) + "," + y(v).toFixed(1); });
   const tone = total >= 0 ? "var(--up)" : "var(--down)";
   return '<svg class="spark" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" ' +
-      'aria-label="累计已实现盈亏 ' + sgn(total) + ' 美元">' +
+      'aria-label="' + esc(label || ("累计已实现盈亏 " + sgn(total) + " 美元")) + '">' +
     '<line class="zero" x1="0" y1="' + y(0).toFixed(1) + '" x2="' + W + '" y2="' + y(0).toFixed(1) + '"></line>' +
     '<polygon class="area" style="fill:' + tone + '" points="' + pad + ',' + y(0).toFixed(1) + ' ' +
       pts.join(" ") + " " + (W - pad) + "," + y(0).toFixed(1) + '"></polygon>' +
@@ -714,10 +714,7 @@ document.getElementById("saveCfg").addEventListener("click", async function(){
   } catch (e){ st.textContent = "保存失败:" + e.message; }
 });
 document.getElementById("reloadCfg").addEventListener("click", function(){ renderConfig(state.CFG); });
-/* ── 回测：提交后每 3 秒轮询，跑完自动出结果 ── */
-const BT_FIELDS = [["starting_nlv", "起始净值"], ["pnl", "净盈亏"],
-                   ["trades", "交易笔数"], ["max_drawdown_pct", "最大回撤%"]];
-
+/* ── 回测：提交后每 3 秒轮询；结果 schema 是嵌套的(pnl.total / trades.buy_count) ── */
 function renderBacktest(d){
   const el = document.getElementById("btResult");
   if (!d || d.status === "idle"){ el.innerHTML = ""; return; }
@@ -726,23 +723,28 @@ function renderBacktest(d){
     el.innerHTML = '<span class="note">回测失败：' + esc(d.message || "未知错误") + '</span>';
     return;
   }
-  const cells = BT_FIELDS.map(function(f){
-    let v = d[f[0]];
-    if (v == null) return "";
-    if (Array.isArray(v)) v = v.length;
-    if (typeof v !== "number") return "";
-    const isPnl = f[0] === "pnl";
-    const txt = f[0] === "trades" ? String(v)
-              : (isPnl ? sgn(v) : num(v, f[0] === "max_drawdown_pct" ? 2 : 2));
-    return '<div class="kv"><span class="k">' + f[1] + '</span><div class="v"' +
-      (isPnl ? ' style="color:var(--' + (cls(v) || "fg") + ')"' : "") + '>' + txt + '</div></div>';
-  }).filter(Boolean).join("");
-  const curve = (Array.isArray(d.equity_curve) ? d.equity_curve : []).map(function(p){
-    return typeof p === "number" ? p : (p && (p.equity != null ? p.equity : p.value));
-  }).filter(function(x){ return typeof x === "number"; });
-  el.innerHTML = (cells ? '<div class="rep">' + cells + '</div>' : "") +
-    (curve.length > 4 ? sparkline(curve, curve[curve.length - 1]) : "") ||
-    '<span class="note">回测跑完了，但结果里没有可显示的指标</span>';
+  const t = d.trades || {}, p = d.pnl || {};
+  const cells = [
+    ["起始净值", d.starting_nlv == null ? null : usd(d.starting_nlv), ""],
+    ["净盈亏",   p.total == null ? null : sgn(p.total), cls(p.total)],
+    ["交易",     t.buy_count == null ? null : t.buy_count + " 买 / " + t.sell_count + " 卖", ""],
+    ["胜率",     t.win_rate == null ? null : num(t.win_rate * 100, 0) + "%", ""],
+    ["最大回撤", d.max_drawdown_pct == null ? null : num(d.max_drawdown_pct, 2) + "%", ""],
+    ["平均盈亏", p.avg_win == null ? null : sgn(p.avg_win) + " / " + sgn(p.avg_loss), ""],
+    ["K 线根数", d.bars_simulated == null ? null : String(d.bars_simulated), ""]
+  ].filter(function(c){ return c[1] != null; })
+   .map(function(c){
+     return '<div class="kv"><span class="k">' + c[0] + '</span><div class="v"' +
+       (c[2] ? ' style="color:var(--' + c[2] + ')"' : "") + '>' + c[1] + '</div></div>';
+   }).join("");
+
+  const curve = (d.equity_curve || []).filter(function(x){ return typeof x === "number"; });
+  el.innerHTML = '<div class="rep" style="grid-template-columns:repeat(auto-fit,minmax(96px,1fr))">' +
+      cells + '</div>' +
+    (curve.length > 4
+      ? sparkline(curve, curve[curve.length - 1],
+                  "回测累计盈亏 " + sgn(curve[curve.length - 1]) + " 美元")
+      : "");
 }
 
 let btTimer = null;
