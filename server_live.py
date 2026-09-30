@@ -79,13 +79,16 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self._path() == "/backtest_result":
             result = DASHBOARD_DIR / "backtest_result.json"
-            resp = {"status": "running" if Handler._bt_running else "idle"}
-            if result.exists():
+            if Handler._bt_running:
+                resp = {"status": "running"}     # 先判运行中，否则重跑会一直报上次的 done
+            elif result.exists():
                 try:
                     resp = json.loads(result.read_text())
                     resp["status"] = "done"
                 except json.JSONDecodeError:
                     resp = {"status": "error", "message": "回测结果不是合法 JSON"}
+            else:
+                resp = {"status": "idle"}
             self._json(200, resp)
             return
         super().do_GET()

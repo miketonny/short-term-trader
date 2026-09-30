@@ -297,8 +297,11 @@ footer{font-size:12px; color:var(--fg-dim); padding:4px 2px 0; line-height:1.7}
         </div>
       </div>
       <div style="border-top:1px solid var(--line-soft); padding-top:12px">
-        <button class="btn ghost" id="btBtn">跑一次回测</button>
-        <span class="note" id="btMsg" style="margin-left:10px">回测接口待补进 server_live.py</span>
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+          <button class="btn ghost" id="btBtn">跑一次回测</button>
+          <span class="note" id="btMsg">用当前 strategy_config.json 跑一遍历史回测</span>
+        </div>
+        <div id="btResult" style="margin-top:12px"></div>
       </div>
     </div>
   </details>
@@ -710,8 +713,58 @@ document.getElementById("saveCfg").addEventListener("click", async function(){
   } catch (e){ st.textContent = "保存失败:" + e.message; }
 });
 document.getElementById("reloadCfg").addEventListener("click", function(){ renderConfig(state.CFG); });
-document.getElementById("btBtn").addEventListener("click", function(){
-  document.getElementById("btMsg").textContent = "回测接口还没接（server_live.py 缺 /run_backtest）";
+/* ── 回测：提交后每 3 秒轮询，跑完自动出结果 ── */
+const BT_FIELDS = [["starting_nlv", "起始净值"], ["pnl", "净盈亏"],
+                   ["trades", "交易笔数"], ["max_drawdown_pct", "最大回撤%"]];
+
+function renderBacktest(d){
+  const el = document.getElementById("btResult");
+  if (!d || d.status === "idle"){ el.innerHTML = ""; return; }
+  if (d.status === "running"){ el.innerHTML = '<span class="note">回测中…跑完自动刷新</span>'; return; }
+  if (d.status === "error"){
+    el.innerHTML = '<span class="note">回测失败：' + esc(d.message || "未知错误") + '</span>';
+    return;
+  }
+  const cells = BT_FIELDS.map(function(f){
+    let v = d[f[0]];
+    if (v == null) return "";
+    if (Array.isArray(v)) v = v.length;
+    if (typeof v !== "number") return "";
+    const isPnl = f[0] === "pnl";
+    const txt = f[0] === "trades" ? String(v)
+              : (isPnl ? sgn(v) : num(v, f[0] === "max_drawdown_pct" ? 2 : 2));
+    return '<div class="kv"><span class="k">' + f[1] + '</span><div class="v"' +
+      (isPnl ? ' style="color:var(--' + (cls(v) || "fg") + ')"' : "") + '>' + txt + '</div></div>';
+  }).filter(Boolean).join("");
+  const curve = (Array.isArray(d.equity_curve) ? d.equity_curve : []).map(function(p){
+    return typeof p === "number" ? p : (p && (p.equity != null ? p.equity : p.value));
+  }).filter(function(x){ return typeof x === "number"; });
+  el.innerHTML = (cells ? '<div class="rep">' + cells + '</div>' : "") +
+    (curve.length > 4 ? sparkline(curve, curve[curve.length - 1]) : "") ||
+    '<span class="note">回测跑完了，但结果里没有可显示的指标</span>';
+}
+
+let btTimer = null;
+document.getElementById("btBtn").addEventListener("click", async function(){
+  const msg = document.getElementById("btMsg");
+  msg.textContent = "已提交，跑完自动刷新…";
+  try {
+    const r = await fetch("run_backtest", {method: "POST"});
+    if (!r.ok) throw new Error(r.status);
+  } catch (e){ msg.textContent = "提交失败：" + e.message; return; }
+
+  let n = 0;
+  clearInterval(btTimer);
+  btTimer = setInterval(async function(){
+    n++;
+    try {
+      const d = await (await fetch("backtest_result?t=" + Date.now())).json();
+      renderBacktest(d);
+      if (d.status === "done"){ msg.textContent = "回测完成"; clearInterval(btTimer); }
+      else if (d.status === "error"){ msg.textContent = "回测失败"; clearInterval(btTimer); }
+      else if (n > 60){ msg.textContent = "等太久了，去服务器看日志"; clearInterval(btTimer); }
+    } catch (e){ /* 单次轮询失败不中断 */ }
+  }, 3000);
 });
 
 boot();
