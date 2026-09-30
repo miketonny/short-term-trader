@@ -181,6 +181,12 @@ body{
 .adv-why{margin:7px 0 0; font-size:13px; color:var(--fg-muted); line-height:1.5}
 .adv-why ul{margin:0; padding-left:16px}
 .adv-why li{margin:0 0 3px}
+.adv-more{margin-top:7px}
+.adv-more>summary{font-size:11px; color:var(--fg-dim); cursor:pointer; letter-spacing:.04em}
+.adv-more .ab{font-size:12.5px; color:var(--fg-muted); line-height:1.5; margin-top:6px}
+.adv-more .ab .k{display:inline-block; min-width:44px; color:var(--fg-dim); font-size:11px;
+                 letter-spacing:.05em; margin-right:6px}
+.btn.tiny{font-size:11.5px; padding:3px 9px; border-radius:5px}
 .conf{display:inline-flex; align-items:center; gap:5px; font-family:var(--font-data); font-size:11px; color:var(--fg-dim)}
 .conf-track{width:34px; height:4px; border-radius:2px; background:var(--panel-2); overflow:hidden; display:inline-block}
 .conf-fill{display:block; height:100%; background:var(--accent)}
@@ -270,7 +276,8 @@ footer{font-size:12px; color:var(--fg-dim); padding:4px 2px 0; line-height:1.7}
 
     <div class="col-side">
       <section class="panel">
-        <h2>顾问信号 <span class="meta" id="advMeta"></span></h2>
+        <h2>顾问信号 <span class="meta" id="advMeta"></span>
+          <button class="btn ghost tiny" id="askAdv" style="margin-left:auto">问一次顾问</button></h2>
         <div id="advisor"></div>
       </section>
 
@@ -513,24 +520,43 @@ function renderAdvisor(D){
     return;
   }
 
-  host.innerHTML = rows.map(function(a){
-    const d = a.decision || {};
-    const dir = d.direction || (a.decision == null ? "无决策" : "—");
-    const tone = /buy|hold/i.test(dir) ? "up" : (/exit|trim|reject|sell/i.test(dir) ? "down" : "");
-    const conf = typeof d.confidence === "number" ? d.confidence : null;
-    const why = (d.key_reasons || []).slice(0, 2);
-    return '<div class="adv"><div class="adv-head">' +
-      '<span class="adv-time">' + esc(String(a.run_ts || "").slice(5, 16).replace("T", " ")) + '</span>' +
-      '<span class="sig-sym">' + esc(a.symbol || "") + '</span>' +
-      '<span class="chip line">' + esc(a.kind === "position" ? "持仓" : "入场") + '</span>' +
-      '<span class="chip ' + tone + '">' + esc(dir) + '</span>' +
-      (conf != null ? '<span class="conf">置信 ' + num(conf, 2) +
-        '<span class="conf-track"><span class="conf-fill" style="width:' + (conf * 100) + '%"></span></span></span>' : "") +
-      '</div>' +
-      (why.length ? '<div class="adv-why"><ul>' + why.map(function(w){
-        return "<li>" + esc(w) + "</li>"; }).join("") + '</ul></div>' : "") +
-    '</div>';
-  }).join("");
+  host.innerHTML = rows.map(advisorRow).join("");
+}
+
+const KIND_CN = {entry: "入场", position: "持仓",
+                 manual_entry: "手动·入场", manual_position: "手动·持仓"};
+const AB_CN = {news_macro: "消息面", technical: "技术面", risk: "风险"};
+
+function advisorRow(a){
+  const d = a.decision || {};
+  const dir = d.direction || (a.decision == null ? "无决策" : "—");
+  const tone = /buy|hold/i.test(dir) ? "up"
+             : (/exit|trim|reject|sell|caution/i.test(dir) ? "down" : "");
+  const conf = typeof d.confidence === "number" ? d.confidence : null;
+  const why = (d.key_reasons || []).slice(0, 2);
+  const isManual = /^manual_/.test(a.kind || "");
+  const approx = a.approx || (a.shadow && a.shadow.approx_macd);
+  const ab = d.agent_breakdown || {};
+  const abKeys = Object.keys(ab).filter(function(k){ return ab[k]; });
+
+  return '<div class="adv"><div class="adv-head">' +
+    '<span class="adv-time">' + esc(String(a.run_ts || "").slice(5, 16).replace("T", " ")) + '</span>' +
+    '<span class="sig-sym">' + esc(a.symbol || "") + '</span>' +
+    '<span class="chip ' + (isManual ? "accent" : "line") + '">' +
+      esc(KIND_CN[a.kind] || "入场") + '</span>' +
+    '<span class="chip ' + tone + '">' + esc(dir) + '</span>' +
+    (conf != null ? '<span class="conf">置信 ' + num(conf, 2) +
+      '<span class="conf-track"><span class="conf-fill" style="width:' +
+      (conf * 100) + '%"></span></span></span>' : "") +
+    (approx ? '<span class="dimmer" style="font-size:11px">MACD 近似</span>' : "") +
+    '</div>' +
+    (why.length ? '<div class="adv-why"><ul>' + why.map(function(w){
+      return "<li>" + esc(w) + "</li>"; }).join("") + '</ul></div>' : "") +
+    (abKeys.length ? '<details class="adv-more"><summary>三段推理</summary>' +
+      abKeys.map(function(k){
+        return '<div class="ab"><span class="k">' + esc(AB_CN[k] || k) + '</span>' +
+               esc(ab[k]) + '</div>'; }).join("") + '</details>' : "") +
+  '</div>';
 }
 
 /* ── 战绩：今日 + 累计已实现曲线 ── */
@@ -725,6 +751,34 @@ document.getElementById("saveCfg").addEventListener("click", async function(){
   } catch (e){ st.textContent = "保存失败:" + e.message; }
 });
 document.getElementById("reloadCfg").addEventListener("click", function(){ renderConfig(state.CFG); });
+/* ── 问一次顾问：对当前候选/持仓各问一次，结果写进 advisor_log 并就地插到面板顶部 ── */
+document.getElementById("askAdv").addEventListener("click", async function(){
+  const btn = this, meta = document.getElementById("advMeta");
+  btn.disabled = true;
+  const keep = meta.textContent;
+  meta.textContent = "咨询中…最多 45 秒";
+  try {
+    const r = await fetch("ask_advisor", {method: "POST"});
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || r.status);
+    const rows = (j.results || []).filter(function(x){ return x.decision; });
+    const failed = (j.results || []).length - rows.length;
+    if (rows.length){
+      const host = document.getElementById("advisor");
+      const empty = host.querySelector(".empty");
+      if (empty) empty.remove();
+      host.insertAdjacentHTML("afterbegin", rows.map(advisorRow).join(""));
+    }
+    meta.textContent = "快照 " + String(j.snapshot || "").slice(11, 19) +
+      (failed ? " · " + failed + " 个无返回" : "");
+  } catch (e){
+    meta.textContent = "问失败:" + e.message;
+    setTimeout(function(){ meta.textContent = keep; }, 6000);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 /* ── 回测：提交后每 3 秒轮询；结果 schema 是嵌套的(pnl.total / trades.buy_count) ── */
 function renderBacktest(d){
   const el = document.getElementById("btResult");

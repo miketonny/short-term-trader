@@ -706,7 +706,7 @@ async def run():
                     dashboard["symbols"][sym] = {
                         "price": price, "rsi": round(rsi, 1), "sma": round(sma, 2),
                         "bb_upper": round(upper, 2), "bb_lower": round(lower, 2),
-                        "adx": round(adx, 1), "macd_hist": round(hist, 4),
+                        "adx": round(adx, 1), "macd_hist": round(hist, 4), "macd_line": round(ml, 4), "macd_signal": round(sl, 4),
                         "mode": "cooldown", "checks": {}, "score": 0, "all_ok": False,
                         "sell_triggers": []
                     }
@@ -717,7 +717,7 @@ async def run():
                     dashboard["symbols"][sym] = {
                         "price": price, "rsi": round(rsi, 1), "sma": round(sma, 2),
                         "bb_upper": round(upper, 2), "bb_lower": round(lower, 2),
-                        "adx": round(adx, 1), "macd_hist": round(hist, 4),
+                        "adx": round(adx, 1), "macd_hist": round(hist, 4), "macd_line": round(ml, 4), "macd_signal": round(sl, 4),
                         "mode": "blocked", "checks": {}, "score": 0, "all_ok": False,
                         "sell_triggers": []
                     }
@@ -925,7 +925,7 @@ async def run():
             dashboard["symbols"][sym] = {
                 "price": price, "rsi": round(rsi, 1), "sma": round(sma, 2),
                 "bb_upper": round(upper, 2), "bb_lower": round(lower, 2),
-                "adx": round(adx, 1), "macd_hist": round(hist, 4),
+                "adx": round(adx, 1), "macd_hist": round(hist, 4), "macd_line": round(ml, 4), "macd_signal": round(sl, 4),
                 "mode": entry_mode or determine_mode(rsi, price, sma),
                 "checks": checks, "score": score, "all_ok": all_ok,
                 "sell_triggers": sell_triggers
