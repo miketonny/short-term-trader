@@ -138,23 +138,63 @@ def get_market_info():
     return "unknown", "未知", et_time, False
 
 # ============ 新闻 ============
-def fetch_news():
+NEWS_PER_HELD = 3      # 每个持仓标的最多几条
+NEWS_PER_WATCH = 2     # 每个候选标的最多几条
+NEWS_MARKET = 3        # 大盘固定几条
+NEWS_LIMIT = 12        # 总数上限
+
+
+def _fetch_rss(symbols, cap):
+    """抓 Yahoo 财经 RSS；单个源失败只丢这一路，不影响其它源"""
     try:
         import xml.etree.ElementTree as ET
-        resp = requests.get(
-            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=SPY,QQQ&region=US&lang=en-US",
-            timeout=10, headers={"User-Agent": "Mozilla/5.0"}
-        )
+        url = ("https://feeds.finance.yahoo.com/rss/2.0/headline?s="
+               + ",".join(symbols) + "&region=US&lang=en-US")
+        resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         root = ET.fromstring(resp.text)
         items = []
-        for item in root.findall(".//item")[:6]:
+        for item in root.findall(".//item")[:cap]:
+            def _t(tag):
+                el = item.find(tag)
+                return el.text if el is not None and el.text else ""
             items.append({
-                "title": item.find("title").text if item.find("title") is not None else "",
+                "title": _t("title"),
                 "source": "Yahoo Finance",
-                "url": item.find("link").text if item.find("link") is not None else "",
-                "time": item.find("pubDate").text[:22] if item.find("pubDate") is not None else ""
+                "url": _t("link"),
+                "time": _t("pubDate")[:22],
             })
         return items
+    except Exception as e:
+        print(f"  新闻源 {','.join(symbols)} 失败: {e}")
+        return []
+
+
+def fetch_news(held=()):
+    """新闻按策略相关度分档：持仓标的 > 候选标的 > 大盘 SPY/QQQ。
+
+    每个标的单独取自己的 RSS，避免一个板块刷屏；每条带 for（关联标的）
+    和 tier 字段，看板据此把持仓相关的排前面并打标签。
+    """
+    try:
+        held = [s for s in dict.fromkeys(held)]
+        watch = [s for s in SYMBOLS if s not in held]
+        picked, seen = [], set()
+        for tier, syms, cap in (("held", held, NEWS_PER_HELD),
+                                ("watch", watch, NEWS_PER_WATCH)):
+            for sym in syms:
+                for n in _fetch_rss([sym], cap):
+                    if not n["title"] or n["title"] in seen:
+                        continue
+                    seen.add(n["title"])
+                    n["for"], n["tier"] = [sym], tier
+                    picked.append(n)
+        for n in _fetch_rss(["SPY", "QQQ"], NEWS_MARKET):
+            if not n["title"] or n["title"] in seen:
+                continue
+            seen.add(n["title"])
+            n["for"], n["tier"] = [], "market"
+            picked.append(n)
+        return picked[:NEWS_LIMIT]
     except Exception as e:
         print(f"  新闻获取失败: {e}")
         notify_error("ibkr_news_feed", str(e))
@@ -528,7 +568,15 @@ async def run():
         trade_history = []
 
     positions = {sym: None for sym in SYMBOLS}
+    held_all, held_other = [], {}   # 账户全部多头，含非策略持仓（GLD/QQQM 等）
     for p in ib.positions():
+        if p.position > 0:
+            held_all.append(p.contract.symbol)
+            if p.contract.symbol not in SYMBOLS:
+                held_other[p.contract.symbol] = {
+                    "qty": float(p.position),
+                    "avg_cost": float(p.avgCost) if p.avgCost else 0,
+                }
         if p.contract.symbol in SYMBOLS and p.position > 0:
             entry = {
                 "qty": float(p.position),
@@ -547,7 +595,7 @@ async def run():
 
     # ── 市场状态 ──
     status_code, status_text, et_time, should_trade = get_market_info()
-    news = fetch_news()
+    news = fetch_news(held_all)
 
     dashboard = {
         "time": now.strftime("%H:%M:%S"),
@@ -557,6 +605,7 @@ async def run():
         "market_et": et_time,
         "account": {"nlv": nlv, "buying_power": buying_power},
         "positions": {sym: pos for sym, pos in positions.items()},
+        "held_other": held_other,
         "news": news,
         "symbols": {},
         "symbols_time": None
