@@ -38,9 +38,16 @@ class Handler(SimpleHTTPRequestHandler):
                 if not isinstance(cfg, dict):
                     raise ValueError("config 必须是对象")
                 target = DASHBOARD_DIR / "strategy_config.json"   # 软链接 → 真源
-                target.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
-                print(f"  ⚙️ 参数已保存 {len(cfg)} 项")
-                self._json(200, {"ok": True})
+                # 只允许改现有键：漏传/传空 = 保持原值，绝不删键（一个空 POST 就能清空配置）
+                base = json.loads(target.read_text())
+                merged = {k: (cfg[k] if k in cfg else v) for k, v in base.items()}
+                missing = {"symbols", "max_positions", "trading_enabled"} - set(merged)
+                if missing:
+                    raise ValueError(f"配置缺少必需字段: {sorted(missing)}")
+                target.write_text(json.dumps(merged, indent=2, ensure_ascii=False))
+                changed = [k for k in merged if merged[k] != base.get(k)]
+                print(f"  ⚙️ 参数已保存，改动 {len(changed)} 项: {changed}")
+                self._json(200, {"ok": True, "changed": changed})
             except Exception as e:
                 print(f"  ❌ save_config 失败: {e}")
                 self._json(400, {"ok": False, "error": str(e)})
