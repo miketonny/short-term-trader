@@ -74,8 +74,16 @@ class Handler(SimpleHTTPRequestHandler):
 
             def run():
                 try:
-                    subprocess.run([sys.executable, str(TRADER_DIR / "backtest.py")],
-                                   capture_output=True, text=True, timeout=180,
+                    # 用当前真实 NLV 跑，回测才算的是这个账户的摩擦（1 股 vs 多股差别巨大）
+                    cmd = [sys.executable, str(TRADER_DIR / "backtest.py")]
+                    try:
+                        nlv = (json.loads((DASHBOARD_DIR / "data.json").read_text())
+                               .get("account") or {}).get("nlv")
+                        if nlv:
+                            cmd += ["--nlv", str(round(float(nlv)))]
+                    except Exception:
+                        pass
+                    subprocess.run(cmd, capture_output=True, text=True, timeout=180,
                                    cwd=str(TRADER_DIR))
                 except Exception as e:
                     print(f"  ❌ 回测失败: {e}")

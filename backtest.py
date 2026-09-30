@@ -29,9 +29,12 @@ from strategy_core import (calc_adx, calc_bbands, calc_macd, calc_rsi, calc_sma,
 
 # ─── Config ─────────────────────────────────────────────────
 TWELVE_DATA_KEY = "a3377a4097ee4b2fba8a646a6dd898ab"
-SLIPPAGE = 0.001          # 0.1% per side
-STARTING_NLV = 100_000    # 固定起始净值，便于跨次比较
-DEFAULT_BARS = 500        # 回测窗口（根）
+SLIPPAGE = 0.001            # 0.1% per side
+DEFAULT_NLV = 100_000       # 起始净值，--nlv 可改（跑真实账户规模用 --nlv 1010）
+DEFAULT_BARS = 500          # 回测窗口（根）
+COMMISSION_PER_SHARE = 0.005   # IBKR Fixed
+COMMISSION_MIN = 1.00          # 每笔最低佣金
+LEVERAGE_DEFAULT = 1.0
 
 # 各周期一天有几根 K 线，用来把"分钟"形式的冷却换算成"根"
 BARS_PER_DAY = {"1min": 390, "5min": 78, "15min": 26, "30min": 13, "45min": 9,
@@ -45,6 +48,16 @@ def bars_per_day(interval):
 def mins_to_bars(minutes, interval):
     """N 分钟冷却 = 多少根 K 线（按交易日折算，日线时 1440 分钟 = 1 根）"""
     return max(1, int(round(minutes / 1440.0 * bars_per_day(interval))))
+
+
+def commission(shares):
+    """IBKR Fixed：$0.005/股，每笔最低 $1"""
+    return max(COMMISSION_MIN, COMMISSION_PER_SHARE * abs(shares))
+
+
+def position_qty(nlv, alloc, leverage, price):
+    """与实盘同一行：整数股，最少 1 股（IBKR API 不收小数股）"""
+    return max(1, int((nlv * alloc * leverage) / price))
 
 
 def load_config(path):
@@ -84,7 +97,7 @@ def fetch_candles(symbol, interval, outputsize):
 
 
 # ─── Simulation ──────────────────────────────────────────────
-def run_backtest(cfg, bars=DEFAULT_BARS):
+def run_backtest(cfg, bars=DEFAULT_BARS, starting_nlv=DEFAULT_NLV):
     symbols = cfg["symbols"]
     interval = cfg["interval"]
     rsi_oversold = cfg["rsi_oversold"]
@@ -94,6 +107,7 @@ def run_backtest(cfg, bars=DEFAULT_BARS):
     adx_trending = cfg["adx_trending"]
     stop_loss_pct = cfg["stop_loss_pct"]
     position_alloc = cfg["position_alloc"]
+    leverage = cfg.get("leverage", LEVERAGE_DEFAULT)
     max_positions = cfg["max_positions"]
     trend_sma = cfg["trend_filter_sma_period"]
     macd_threshold = cfg["macd_hist_threshold"]
@@ -123,8 +137,9 @@ def run_backtest(cfg, bars=DEFAULT_BARS):
     positions = {}     # {symbol: {...}}
     last_sells = {}    # {symbol: bar}
     last_buys = {}     # {symbol: bar}
-    nlv = STARTING_NLV
+    nlv = starting_nlv
     cumulative_pnl = peak_equity = max_drawdown_pct = 0.0
+    total_commission = 0.0
 
     for bar in range(warmup, min_bars - 1):   # 末根不跑：成交要用 bar+1 的开盘
         for sym, candles in all_data.items():
@@ -169,12 +184,15 @@ def run_backtest(cfg, bars=DEFAULT_BARS):
                     ok = bool(check_buy_trend(rsi, price, sma, ml, sl, hist, avg_vol, cur_vol,
                                               rsi_trend_entry, macd_threshold))
                 if ok:
-                    qty = (nlv * position_alloc) / buy_price
+                    qty = position_qty(nlv, position_alloc, leverage, buy_price)
+                    comm = commission(qty)
+                    total_commission += comm
                     positions[sym] = {"entry_price": buy_price, "entry_bar": bar,
-                                      "mode": mode, "qty": qty}
+                                      "mode": mode, "qty": qty, "comm": comm}
                     last_buys[sym] = bar
                     trades.append({"sym": sym, "action": "BUY", "bar": bar,
-                                   "price": buy_price, "mode": mode, "qty": qty})
+                                   "price": buy_price, "mode": mode, "qty": qty,
+                                   "notional": round(buy_price * qty, 2), "comm": round(comm, 2)})
             else:
                 entry_price, entry_bar, mode = pos["entry_price"], pos["entry_bar"], pos["mode"]
                 stop_price = entry_price * (1 - stop_loss_pct)
@@ -194,10 +212,14 @@ def run_backtest(cfg, bars=DEFAULT_BARS):
                             sell_triggered, sell_reason = True, "oversold_sell"
 
                 if sell_triggered:
-                    pnl = (sell_price - entry_price) * pos["qty"]
+                    comm = commission(pos["qty"])
+                    total_commission += comm
+                    pnl = (sell_price - entry_price) * pos["qty"] - pos["comm"] - comm
                     cumulative_pnl += pnl
                     trades.append({"sym": sym, "action": "SELL", "bar": bar, "price": sell_price,
-                                   "reason": sell_reason, "pnl": pnl, "qty": pos["qty"]})
+                                   "reason": sell_reason, "pnl": pnl, "qty": pos["qty"],
+                                   "notional": round(sell_price * pos["qty"], 2),
+                                   "comm": round(comm, 2)})
                     last_sells[sym] = bar
                     del positions[sym]
 
@@ -210,10 +232,12 @@ def run_backtest(cfg, bars=DEFAULT_BARS):
     # 收尾：仍持有的按最后一根开盘平掉
     for sym, pos in list(positions.items()):
         last_price = float(all_data[sym]["open"][-1]) * (1 - SLIPPAGE)
-        pnl = (last_price - pos["entry_price"]) * pos["qty"]
+        comm = commission(pos["qty"])
+        total_commission += comm
+        pnl = (last_price - pos["entry_price"]) * pos["qty"] - pos["comm"] - comm
         cumulative_pnl += pnl
         trades.append({"sym": sym, "action": "SELL", "bar": min_bars - 1, "price": last_price,
-                       "reason": "end_of_period", "pnl": pnl, "qty": pos["qty"]})
+                       "reason": "end_of_period", "pnl": pnl, "qty": pos["qty"], "comm": round(comm, 2)})
 
     sell_trades = [t for t in trades if t["action"] == "SELL"]
     wins = [t for t in sell_trades if t.get("pnl", 0) > 0]
@@ -240,6 +264,8 @@ def run_backtest(cfg, bars=DEFAULT_BARS):
         },
         "max_drawdown_pct": round(max_drawdown_pct * 100, 2),
         "starting_nlv": nlv,
+        "commission_total": round(total_commission, 2),
+        "commission_per_roundtrip": round(total_commission / len(sell_trades), 2) if sell_trades else 0,
         "equity_curve": equity_curve[::max(1, len(equity_curve) // 200)],
         "trade_list": trades,
         "detail": trade_summary(trades),
@@ -265,11 +291,13 @@ def main():
     default_cfg = os.path.expanduser("~/live_ibkr_dashboard/strategy_config.json")
     ap.add_argument("--config", default=default_cfg)
     ap.add_argument("--bars", type=int, default=DEFAULT_BARS, help="回测窗口根数")
+    ap.add_argument("--nlv", type=float, default=DEFAULT_NLV,
+                    help="起始净值，跑真实账户规模用 --nlv 1010")
     args = ap.parse_args()
 
     cfg_path = Path(args.config)
     cfg = load_config(cfg_path)
-    result = run_backtest(cfg, args.bars)
+    result = run_backtest(cfg, args.bars, args.nlv)
 
     # 结果写到 config 所在目录，看板才读得到（--config 不再是摆设）
     out = cfg_path.parent / "backtest_result.json"
