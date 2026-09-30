@@ -503,9 +503,15 @@ function renderSignals(D, CFG){
 function renderAdvisor(D){
   const rows = (D.advisor_history || []).slice(-8).reverse();
   const host = document.getElementById("advisor");
+  const last = rows.length ? String(rows[0].run_ts || "").slice(5, 16).replace("T", " ") : "";
   document.getElementById("advMeta").textContent =
-    state.mode === "snapshot" ? "示例数据" : (rows.length ? rows.length + " 条" : "");
-  if (!rows.length){ host.innerHTML = '<div class="empty">顾问还没给过信号</div>'; return; }
+    state.mode === "snapshot" ? "示例数据" : (rows.length ? "最近 " + last : "");
+  if (!rows.length){
+    host.innerHTML = '<div class="empty">还没有顾问记录<br>' +
+      '<span class="dimmer">策略准备买入、或评估持仓要不要离场时才会问顾问，' +
+      '平时不会产生记录</span></div>';
+    return;
+  }
 
   host.innerHTML = rows.map(function(a){
     const d = a.decision || {};
