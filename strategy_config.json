@@ -4,7 +4,8 @@
   "symbols": [
     "XLF",
     "XLE",
-    "XLV"
+    "XLV",
+    "XLU"
   ],
   "rsi_oversold": 30,
   "rsi_overbought": 70,
