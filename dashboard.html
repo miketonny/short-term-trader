@@ -669,6 +669,10 @@ async function boot(){
   renderBar(D); renderStats(D, CFG); renderPositions(D, CFG); renderSignals(D, CFG);
   renderAdvisor(D); renderSession(D); renderTrades(D); renderNews(D); renderConfig(CFG);
 
+  // 上次回测的结果直接显示，不用等用户点
+  try { renderBacktest(await (await fetch("backtest_result?t=" + Date.now())).json()); }
+  catch (e){ /* 没跑过回测就没有 */ }
+
   const b = document.getElementById("banner");
   if (state.mode === "snapshot"){
     b.hidden = false;
