@@ -545,7 +545,7 @@ function renderSession(D){
     '</div>' + (curve.length > 4 ? sparkline(curve, total) : "");
 }
 
-function sparkline(vals, total, label){
+function sparkline(vals, total, label, caption){
   const W = 260, H = 56, pad = 3;
   const lo = Math.min.apply(null, vals.concat(0)), hi = Math.max.apply(null, vals.concat(0));
   const span = (hi - lo) || 1;
@@ -560,7 +560,8 @@ function sparkline(vals, total, label){
       pts.join(" ") + " " + (W - pad) + "," + y(0).toFixed(1) + '"></polygon>' +
     '<polyline class="line" style="stroke:' + tone + '" points="' + pts.join(" ") + '"></polyline>' +
   '</svg>' +
-  '<div class="spark-lbl"><span>累计 ' + sgn(total) + ' · ' + vals.length + ' 笔平仓</span>' +
+  '<div class="spark-lbl"><span>' +
+    esc(caption || ("累计 " + sgn(total) + " · " + vals.length + " 笔平仓")) + '</span>' +
     '<span>低 ' + sgn(lo) + ' · 高 ' + sgn(hi) + '</span></div>';
 }
 
@@ -747,7 +748,8 @@ function renderBacktest(d){
       cells + '</div>' +
     (curve.length > 4
       ? sparkline(curve, curve[curve.length - 1],
-                  "回测累计盈亏 " + sgn(curve[curve.length - 1]) + " 美元")
+                  "回测累计盈亏 " + sgn(curve[curve.length - 1]) + " 美元",
+                  "回测累计 " + sgn(curve[curve.length - 1]) + " · " + curve.length + " 个数据点")
       : "");
 }
 
